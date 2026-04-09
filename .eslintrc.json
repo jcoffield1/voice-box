@@ -1,0 +1,12 @@
+{
+  "root": true,
+  "extends": [
+    "@electron-toolkit/eslint-config-ts/eslint-config",
+    "@electron-toolkit/eslint-config-prettier"
+  ],
+  "rules": {
+    "@typescript-eslint/no-explicit-any": "error",
+    "@typescript-eslint/explicit-function-return-type": "off",
+    "react/react-in-jsx-scope": "off"
+  }
+}

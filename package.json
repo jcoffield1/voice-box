@@ -1,0 +1,110 @@
+{
+  "name": "call-transcriber",
+  "version": "0.1.0",
+  "description": "Local-first Electron app for call recording, transcription, and AI analysis",
+  "main": "./out/main/index.js",
+  "author": "",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "package": "npm run setup:python && npm run build && electron-builder",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit",
+    "setup:python": "bash scripts/setup_python_env.sh",
+    "rebuild": "electron-rebuild -f -w better-sqlite3 -w naudiodon"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "better-sqlite3": "^11.10.0",
+    "electron-updater": "^6.1.7",
+    "keytar": "^7.9.0",
+    "lucide-react": "^1.7.0",
+    "naudiodon": "^2.3.6",
+    "openai": "^4.52.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^6.26.1",
+    "sqlite-vec": "^0.1.6",
+    "zustand": "^4.5.4"
+  },
+  "devDependencies": {
+    "@electron-toolkit/eslint-config-prettier": "^2.0.0",
+    "@electron-toolkit/eslint-config-ts": "^2.0.0",
+    "@electron-toolkit/preload": "^3.0.0",
+    "@electron-toolkit/tsconfig": "^1.0.1",
+    "@electron-toolkit/utils": "^3.0.0",
+    "@electron/rebuild": "^3.7.2",
+    "@playwright/test": "^1.45.0",
+    "@testing-library/jest-dom": "^6.4.6",
+    "@testing-library/react": "^16.0.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.14.9",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.19",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "electron-playwright-helpers": "^1.7.1",
+    "electron-vite": "^2.3.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.3",
+    "jsdom": "^24.1.1",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.6",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.3",
+    "vitest": "^2.0.4"
+  },
+  "build": {
+    "appId": "com.voicebox.app",
+    "productName": "VoiceBox",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "entitlementsInherit": "resources/entitlements.mac.plist",
+      "hardenedRuntime": true,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "VoiceBox ${version}"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*",
+      "python/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "python/",
+        "to": "python/",
+        "filter": [
+          "**/*.py",
+          "requirements.txt",
+          "!runtime/**",
+          "!venv/**"
+        ]
+      },
+      {
+        "from": "python/venv/",
+        "to": "python/venv/"
+      }
+    ]
+  }
+}
