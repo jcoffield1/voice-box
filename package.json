@@ -103,7 +103,13 @@
       },
       {
         "from": "python/venv/",
-        "to": "python/venv/"
+        "to": "python/venv/",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.pyo"
+        ]
       }
     ]
   }
