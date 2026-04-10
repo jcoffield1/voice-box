@@ -68,6 +68,9 @@
   "build": {
     "appId": "com.voicebox.app",
     "productName": "VoiceBox",
+    "asarUnpack": [
+      "**/*.node"
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "entitlementsInherit": "resources/entitlements.mac.plist",
