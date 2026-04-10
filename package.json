@@ -74,8 +74,12 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "entitlements": "resources/entitlements.mac.plist",
       "entitlementsInherit": "resources/entitlements.mac.plist",
       "hardenedRuntime": true,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "VoiceBox records your microphone to transcribe conversations."
+      },
       "target": [
         {
           "target": "dmg",

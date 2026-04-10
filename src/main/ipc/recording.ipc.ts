@@ -1,4 +1,4 @@
-import { ipcMain, app } from 'electron'
+import { ipcMain, app, systemPreferences, shell } from 'electron'
 import { join } from 'path'
 import { IPC } from '@shared/ipc-types'
 import type {
@@ -43,11 +43,23 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
   })
 
   ipcMain.handle(IPC.recording.start, async (_event, args: StartRecordingArgs): Promise<StartRecordingResult> => {
+    // On macOS, ensure microphone permission before attempting to open the device.
+    // This prompts the TCC dialog if not yet decided, and surfaces a clear error
+    // with a link to System Settings if access has been denied.
+    if (process.platform === 'darwin') {
+      const granted = await systemPreferences.askForMediaAccess('microphone')
+      if (!granted) {
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')
+        throw new Error(
+          'Microphone access denied. Grant access in System Settings → Privacy & Security → Microphone, then try again.'
+        )
+      }
+    }
+
     const recording = recordingRepo.create(args.title)
     audio.start(args.config)
 
-    // If audio failed to start (e.g. microphone permission denied), clean up
-    // and surface the error to the renderer rather than silently mis-tracking.
+    // If audio failed to start (e.g. device unavailable), clean up and surface the error.
     if (audio.getState() === 'error') {
       recordingRepo.update(recording.id, { status: 'error' })
       throw new Error('Failed to open audio device. Check microphone permissions.')

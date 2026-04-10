@@ -11,17 +11,27 @@ interface Props {
 export default function RecordingControls({ onDismiss }: Props) {
   const [title, setTitle] = useState('')
   const [systemAudio, setSystemAudio] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const [startError, setStartError] = useState<string | null>(null)
   const { isRecording, audioLevel, startRecording, stopRecording } = useRecordingStore()
   const { selectedInputDeviceId, audioDevices } = useSettingsStore()
 
   const handleStart = async () => {
+    setStartError(null)
+    setStarting(true)
     const label = title.trim() || `Recording ${new Date().toLocaleString()}`
-    await startRecording(label, {
-      sampleRate: 16000,
-      channels: 1,
-      inputDeviceId: selectedInputDeviceId,
-      systemAudioEnabled: systemAudio
-    })
+    try {
+        await startRecording(label, {
+        sampleRate: 16000,
+        channels: 1,
+        inputDeviceId: selectedInputDeviceId,
+        systemAudioEnabled: systemAudio
+      })
+    } catch (e) {
+      setStartError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setStarting(false)
+    }
   }
 
   const handleStop = async () => {
@@ -85,10 +95,13 @@ export default function RecordingControls({ onDismiss }: Props) {
           <span className="text-xs text-zinc-600">(requires BlackHole)</span>
         </label>
       </div>
+      {startError && (
+        <p className="text-xs text-red-400 leading-snug">{startError}</p>
+      )}
       <div className="flex gap-2">
-        <button className="btn-primary" onClick={handleStart}>
+        <button className="btn-primary" onClick={handleStart} disabled={starting}>
           <Mic className="w-4 h-4" />
-          Start Recording
+          {starting ? 'Starting…' : 'Start Recording'}
         </button>
         <button className="btn-ghost" onClick={onDismiss}>
           Cancel

@@ -53,15 +53,15 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     set((s) => ({ recordings: s.recordings.filter((r) => r.id !== id) })),
 
   startRecording: async (title, config) => {
-    const { data, error } = await Promise.resolve(window.api.recording.start({ title, config }))
-      .then((r) => ({ data: r, error: null }))
-      .catch((e: Error) => ({ data: null, error: e }))
-
-    if (!data) {
-      console.error('[Recording] Failed to start:', error?.message)
-      return
+    let result: Awaited<ReturnType<typeof window.api.recording.start>>
+    try {
+      result = await window.api.recording.start({ title, config })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[Recording] Failed to start:', msg)
+      throw new Error(msg)
     }
-    set({ activeRecordingId: data.recordingId, isRecording: true })
+    set({ activeRecordingId: result.recordingId, isRecording: true })
     get().clearLiveSegments()
   },
 
