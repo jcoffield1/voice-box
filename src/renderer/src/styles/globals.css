@@ -17,6 +17,15 @@
   }
 }
 
+@layer utilities {
+  .app-region-drag {
+    -webkit-app-region: drag;
+  }
+  .app-region-no-drag {
+    -webkit-app-region: no-drag;
+  }
+}
+
 @layer components {
   .btn {
     @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium

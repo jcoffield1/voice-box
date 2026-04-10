@@ -69,7 +69,8 @@
     "appId": "com.voicebox.app",
     "productName": "VoiceBox",
     "asarUnpack": [
-      "**/*.node"
+      "**/*.node",
+      "**/sqlite-vec-*/**"
     ],
     "mac": {
       "category": "public.app-category.productivity",

@@ -27,8 +27,16 @@ export function initDatabase(dbPath?: string): Database.Database {
 
   const db = new Database(resolvedPath)
 
-  // Load sqlite-vec extension for vector similarity search
-  sqliteVec.load(db)
+  // Load sqlite-vec extension for vector similarity search.
+  // require.resolve() returns a path inside app.asar which dlopen() cannot
+  // open (asar is a single-file archive). For packaged builds we remap to the
+  // real filesystem copy in app.asar.unpacked, which electron-builder places
+  // there because we listed "**/sqlite-vec-*/**" in asarUnpack.
+  const rawVecPath = sqliteVec.getLoadablePath()
+  const vecPath = app.isPackaged
+    ? rawVecPath.replace(/app\.asar([/\\])/, 'app.asar.unpacked$1')
+    : rawVecPath
+  db.loadExtension(vecPath)
 
   // Performance settings
   db.pragma('journal_mode = WAL')

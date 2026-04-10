@@ -15,8 +15,8 @@ export default function Sidebar() {
 
   return (
     <aside className="w-56 flex-shrink-0 bg-surface-900 border-r border-surface-700 flex flex-col py-4">
-      {/* App logo / title */}
-      <div className="px-4 mb-6 flex items-center gap-2">
+      {/* App logo / title — doubles as a drag handle for the window */}
+      <div className="px-4 mb-6 flex items-center gap-2 app-region-drag">
         <div
           className={`w-3 h-3 rounded-full transition-colors ${
             isRecording ? 'bg-red-500 animate-pulse' : 'bg-accent'

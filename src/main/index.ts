@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell, globalShortcut, protocol, net, systemPreferences } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
+import { appendFileSync, mkdirSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDatabase, closeDatabase, getDatabase } from './services/storage/Database'
 import { RecordingRepository } from './services/storage/repositories/RecordingRepository'
@@ -29,6 +30,34 @@ import { IPC } from '@shared/ipc-types'
 import type { RecordingDebriefReadyPayload } from '@shared/ipc-types'
 
 let mainWindow: BrowserWindow | null = null
+
+// ─── File logger (writes to ~/Library/Logs/VoiceBox/main.log) ────────────────
+// Visible in Console.app or: tail -f ~/Library/Logs/VoiceBox/main.log
+
+function setupFileLogger(): void {
+  const logsDir = join(app.getPath('logs'))
+  try { mkdirSync(logsDir, { recursive: true }) } catch { /* already exists */ }
+  const logFile = join(logsDir, 'main.log')
+
+  function write(level: string, args: unknown[]): void {
+    const ts = new Date().toISOString()
+    const line = `[${ts}] [${level}] ${args.map(String).join(' ')}\n`
+    try { appendFileSync(logFile, line) } catch { /* disk full / permission */ }
+  }
+
+  const orig = { log: console.log, warn: console.warn, error: console.error }
+  console.log   = (...a) => { orig.log(...a);   write('INFO',  a) }
+  console.warn  = (...a) => { orig.warn(...a);  write('WARN',  a) }
+  console.error = (...a) => { orig.error(...a); write('ERROR', a) }
+
+  process.on('uncaughtException',  (e) => write('FATAL', ['uncaughtException',  e?.stack ?? e]))
+  process.on('unhandledRejection', (e) => write('FATAL', ['unhandledRejection', e instanceof Error ? e.stack : e]))
+
+  write('INFO', [`=== VoiceBox starting — ${new Date().toISOString()} ===`])
+  write('INFO', [`userData: ${app.getPath('userData')}`])
+  write('INFO', [`logFile:  ${logFile}`])
+  write('INFO', [`__dirname: ${__dirname}`])
+}
 
 // Must be called before app is ready.
 // standard:true is required so Chromium parses vbfile://localhost/... correctly.
@@ -68,20 +97,42 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
+    console.log('[Window] ready-to-show — calling show()')
     mainWindow!.show()
   })
+
+  // Safety fallback: if ready-to-show never fires (renderer crash, missing
+  // index.html, etc.) force the window visible after 8 seconds so the user
+  // can at least see a blank or error page instead of nothing.
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      console.warn('[Window] ready-to-show never fired — forcing show() as fallback')
+      mainWindow.show()
+    }
+  }, 8000)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
+  const rendererPath = join(__dirname, '../renderer/index.html')
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    console.log('[Window] Loading renderer URL:', process.env['ELECTRON_RENDERER_URL'])
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
     mainWindow.webContents.openDevTools()
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    console.log('[Window] Loading renderer file:', rendererPath)
+    mainWindow.loadFile(rendererPath)
   }
+
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.error(`[Window] did-fail-load: ${code} ${desc} — ${url}`)
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.error('[Window] render-process-gone:', details.reason)
+  })
 }
 
 function initServices(): void {
@@ -220,6 +271,8 @@ Be thorough — this is the complete record of the conversation.`
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
+  setupFileLogger()
+  console.log('[App] whenReady fired')
   electronApp.setAppUserModelId('com.calltranscriber.app')
 
   // Register vbfile:// protocol to serve local audio files to the renderer.
@@ -239,8 +292,17 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  initServices()
+  try {
+    console.log('[App] initServices() start')
+    initServices()
+    console.log('[App] initServices() complete')
+  } catch (err) {
+    console.error('[App] initServices() threw:', (err as Error)?.stack ?? err)
+  }
+
+  console.log('[App] createWindow() start')
   createWindow()
+  console.log('[App] createWindow() complete')
 
   // Request microphone permission on macOS so the first recording attempt
   // doesn't get silently killed by the OS before the user sees a dialog.
