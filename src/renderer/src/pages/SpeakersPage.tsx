@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { SpeakerProfile } from '../../../../shared/types'
-import { Users, Pencil, Trash2, Merge, Check, X, Mic, FileText } from 'lucide-react'
+import { Users, Pencil, Trash2, Merge, Check, X, Mic, FileText, AlertTriangle, RotateCcw } from 'lucide-react'
 
 function speakerColor(name: string): string {
   const colors = [
@@ -23,9 +23,10 @@ interface SpeakerCardProps {
   onDelete: (id: string) => Promise<void>
   onMerge: (sourceId: string, targetId: string) => Promise<void>
   onUpdateNotes: (id: string, notes: string | null) => Promise<void>
+  onResetVoice: (id: string) => Promise<void>
 }
 
-function SpeakerCard({ speaker, allSpeakers, onRename, onDelete, onMerge, onUpdateNotes }: SpeakerCardProps) {
+function SpeakerCard({ speaker, allSpeakers, onRename, onDelete, onMerge, onUpdateNotes, onResetVoice }: SpeakerCardProps) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(speaker.name)
   const [merging, setMerging] = useState(false)
@@ -33,6 +34,9 @@ function SpeakerCard({ speaker, allSpeakers, onRename, onDelete, onMerge, onUpda
   const [notesOpen, setNotesOpen] = useState(false)
   const [notes, setNotes] = useState(speaker.notes ?? '')
   const [busy, setBusy] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [confirmingMerge, setConfirmingMerge] = useState(false)
+  const [confirmingResetVoice, setConfirmingResetVoice] = useState(false)
 
   const saveRename = async () => {
     const trimmed = name.trim()
@@ -50,8 +54,8 @@ function SpeakerCard({ speaker, allSpeakers, onRename, onDelete, onMerge, onUpda
     }
   }
 
-  const confirmDelete = async () => {
-    if (!confirm(`Delete speaker "${speaker.name}"? This cannot be undone.`)) return
+  const executeDelete = async () => {
+    setConfirmingDelete(false)
     setBusy(true)
     try {
       await onDelete(speaker.id)
@@ -60,10 +64,8 @@ function SpeakerCard({ speaker, allSpeakers, onRename, onDelete, onMerge, onUpda
     }
   }
 
-  const confirmMerge = async () => {
-    if (!mergeTarget) return
-    const target = allSpeakers.find((s) => s.id === mergeTarget)
-    if (!confirm(`Merge "${speaker.name}" into "${target?.name}"? All segments will be re-labelled.`)) return
+  const executeMerge = async () => {
+    setConfirmingMerge(false)
     setBusy(true)
     try {
       await onMerge(speaker.id, mergeTarget)
@@ -129,7 +131,7 @@ function SpeakerCard({ speaker, allSpeakers, onRename, onDelete, onMerge, onUpda
           <span>First: {formatDate(speaker.firstSeenAt)}</span>
           <span>Last: {formatDate(speaker.lastSeenAt)}</span>
           {speaker.voiceEmbedding && (
-            <span className="text-emerald-400">Voice profile ✓</span>
+            <span className="text-emerald-400">Voice profile ✓ ({speaker.embeddingSamples} samples)</span>
           )}
         </div>
 
@@ -147,7 +149,7 @@ function SpeakerCard({ speaker, allSpeakers, onRename, onDelete, onMerge, onUpda
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
             </select>
-            <button className="btn-primary py-1 px-2 text-xs" onClick={() => void confirmMerge()} disabled={!mergeTarget || busy}>
+            <button className="btn-primary py-1 px-2 text-xs" onClick={() => { if (mergeTarget) setConfirmingMerge(true) }} disabled={!mergeTarget || busy}>
               Merge
             </button>
             <button className="btn-ghost py-1 px-2 text-xs" onClick={() => { setMerging(false); setMergeTarget('') }}>
@@ -189,6 +191,16 @@ function SpeakerCard({ speaker, allSpeakers, onRename, onDelete, onMerge, onUpda
           >
             <Pencil className="w-3.5 h-3.5" />
           </button>
+          {speaker.voiceEmbedding && (
+            <button
+              className="btn-ghost p-1.5 hover:text-amber-400"
+              title="Reset voice model — clears stored embedding so speaker can be re-trained from scratch"
+              onClick={() => setConfirmingResetVoice(true)}
+              disabled={busy}
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button
             className="btn-ghost p-1.5"
             title="Merge into another speaker"
@@ -200,11 +212,115 @@ function SpeakerCard({ speaker, allSpeakers, onRename, onDelete, onMerge, onUpda
           <button
             className="btn-ghost p-1.5 hover:text-red-400"
             title="Delete speaker"
-            onClick={() => void confirmDelete()}
+            onClick={() => setConfirmingDelete(true)}
             disabled={busy}
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* Reset voice confirmation modal */}
+      {confirmingResetVoice && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirmingResetVoice(false) }}
+        >
+          <div className="card w-80 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-4 h-4 text-amber-400" />
+              </div>
+              <h2 className="font-semibold text-zinc-100">Reset voice model?</h2>
+              <button className="btn-ghost p-1 ml-auto" onClick={() => setConfirmingResetVoice(false)}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm text-zinc-400">
+              Clears the stored voice embedding for{' '}
+              <span className="font-medium text-zinc-200">{speaker.name}</span>.
+              Auto-identification will stop working until you manually assign 3–5 segments in a new recording to rebuild it.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button className="btn-ghost" onClick={() => setConfirmingResetVoice(false)}>Cancel</button>
+              <button
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
+                onClick={async () => {
+                  setConfirmingResetVoice(false)
+                  setBusy(true)
+                  try { await onResetVoice(speaker.id) } finally { setBusy(false) }
+                }}
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {confirmingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirmingDelete(false) }}
+        >
+          <div className="card w-80 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-red-500/15 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4 text-red-400" />
+              </div>
+              <h2 className="font-semibold text-zinc-100">Delete speaker?</h2>
+              <button className="btn-ghost p-1 ml-auto" onClick={() => setConfirmingDelete(false)}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm text-zinc-400">
+              <span className="font-medium text-zinc-200">{speaker.name}</span> will be permanently deleted. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button className="btn-ghost" onClick={() => setConfirmingDelete(false)}>Cancel</button>
+              <button
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 transition-colors"
+                onClick={() => void executeDelete()}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Merge confirmation modal */}
+      {confirmingMerge && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirmingMerge(false) }}
+        >
+          <div className="card w-80 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4 text-amber-400" />
+              </div>
+              <h2 className="font-semibold text-zinc-100">Merge speakers?</h2>
+              <button className="btn-ghost p-1 ml-auto" onClick={() => setConfirmingMerge(false)}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm text-zinc-400">
+              <span className="font-medium text-zinc-200">{speaker.name}</span> will be merged into{' '}
+              <span className="font-medium text-zinc-200">{allSpeakers.find((s) => s.id === mergeTarget)?.name}</span>.
+              All segments will be re-labelled. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button className="btn-ghost" onClick={() => setConfirmingMerge(false)}>Cancel</button>
+              <button
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
+                onClick={() => void executeMerge()}
+              >
+                Merge
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -254,6 +370,13 @@ export default function SpeakersPage() {
     }
   }
 
+  const handleResetVoice = async (id: string) => {
+    const { speaker } = await window.api.speaker.resetVoice({ speakerId: id })
+    if (speaker) {
+      setSpeakers((prev) => prev.map((s) => (s.id === id ? speaker : s)))
+    }
+  }
+
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
@@ -292,6 +415,7 @@ export default function SpeakersPage() {
               onDelete={handleDelete}
               onMerge={handleMerge}
               onUpdateNotes={handleUpdateNotes}
+              onResetVoice={handleResetVoice}
             />
           ))}
         </div>

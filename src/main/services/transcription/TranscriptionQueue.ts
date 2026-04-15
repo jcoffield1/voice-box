@@ -57,22 +57,38 @@ export class TranscriptionQueue extends EventEmitter {
   }
 
   private handleResult(result: TranscriptionResult): void {
+    // Capture the offset once — all segments in this Whisper result share the
+    // same chunk start, so their start/end values are relative to this offset.
+    // Updating the offset INSIDE the loop would shift every subsequent segment
+    // within the same chunk by an extra seg.end, corrupting timestamps.
+    const chunkOffset = this.segmentOffset
+    let maxEnd = 0
+
     for (const seg of result.segments) {
+      // Skip garbage hallucinations. faster-whisper expresses confidence as
+      // avg_logprob (0 = perfect, more negative = worse). Segments below -0.7
+      // are almost always silence/noise artefacts ("U", short hex strings, etc.).
+      // Also skip blank/whitespace-only text.
+      if (!seg.text.trim()) continue
+      if (seg.confidence < -0.7) continue
+
       const input: CreateSegmentInput = {
         recordingId: result.recordingId,
         text: seg.text,
-        timestampStart: this.segmentOffset + seg.start,
-        timestampEnd: this.segmentOffset + seg.end,
+        timestampStart: chunkOffset + seg.start,
+        timestampEnd: chunkOffset + seg.end,
         whisperConfidence: seg.confidence
       }
 
       const saved = this.transcriptRepo.create(input)
       this.emit('segment', saved)
 
-      // Advance offset so next chunk's timestamps continue correctly
-      if (seg.end > 0) {
-        this.segmentOffset = Math.max(this.segmentOffset, this.segmentOffset + seg.end)
-      }
+      if (seg.end > maxEnd) maxEnd = seg.end
+    }
+
+    // Advance the offset by the furthest end time in this chunk
+    if (maxEnd > 0) {
+      this.segmentOffset = chunkOffset + maxEnd
     }
   }
 

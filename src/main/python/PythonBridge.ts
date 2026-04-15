@@ -9,6 +9,7 @@ import { createInterface } from 'readline'
 export type PythonScriptName = 'transcribe' | 'diarize' | 'embed_voice'
 
 interface PendingRequest {
+  processName: PythonScriptName
   resolve: (value: unknown) => void
   reject: (err: Error) => void
   timeout: ReturnType<typeof setTimeout>
@@ -24,11 +25,35 @@ interface JsonResponse {
 const MAX_RETRIES = 3
 const REQUEST_TIMEOUT_MS = 120_000
 
+/** Per-process overrides for requests that are known to be slow.
+ *  Diarization runs a full neural speaker-separation pipeline on CPU/MPS and
+ *  can take 3–8 minutes for longer recordings — 2 minutes is far too short. */
+const PROCESS_TIMEOUT_MS: Partial<Record<PythonScriptName, number>> = {
+  diarize: 600_000, // 10 minutes
+}
+
+interface QueuedSend {
+  doWrite: () => void
+  reject: (err: Error) => void
+}
+
 export class PythonBridge extends EventEmitter {
   private processes: Map<PythonScriptName, ChildProcess> = new Map()
   private pending: Map<string, PendingRequest> = new Map()
   private retries: Map<PythonScriptName, number> = new Map()
   private restarting: Set<PythonScriptName> = new Set()
+  /** True once the process has emitted {startup:'ready'} on stdout */
+  private processReady: Map<PythonScriptName, boolean> = new Map()
+  /** Writes buffered while the process is still starting up */
+  private startupQueue: Map<PythonScriptName, QueuedSend[]> = new Map()
+  /** Extra env vars injected into every spawned process */
+  private extraEnv: Record<string, string> = {}
+
+  /** Inject an environment variable into all future (and restarted) processes.
+   *  Call this before start() for it to take effect on the initial spawn. */
+  setEnv(key: string, value: string): void {
+    this.extraEnv[key] = value
+  }
 
   private getPythonPath(): string {
     const isDev = !app.isPackaged
@@ -60,7 +85,7 @@ export class PythonBridge extends EventEmitter {
 
     const child = spawn(pythonBin, ['-u', script], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+      env: { ...process.env, PYTHONUNBUFFERED: '1', ...this.extraEnv }
     })
 
     // Prevent unhandled ENOENT from crashing the main process if the
@@ -82,8 +107,17 @@ export class PythonBridge extends EventEmitter {
     rl.on('line', (line) => {
       if (!line.trim()) return
       try {
-        const response = JSON.parse(line) as JsonResponse
-        this.handleResponse(response)
+        const parsed = JSON.parse(line) as JsonResponse & { startup?: string }
+        if ('startup' in parsed) {
+          if (parsed.startup === 'ready') {
+            this.processReady.set(name, true)
+            const queue = this.startupQueue.get(name) ?? []
+            this.startupQueue.delete(name)
+            for (const { doWrite } of queue) doWrite()
+          }
+          return // startup messages are not request responses — don't pass to handleResponse
+        }
+        this.handleResponse(parsed)
       } catch {
         // Non-JSON output from Python (e.g., debug prints) — ignore
       }
@@ -95,10 +129,19 @@ export class PythonBridge extends EventEmitter {
 
     child.on('exit', (code, signal) => {
       this.processes.delete(name)
+      this.processReady.delete(name)
       this.emit('process:exit', { name, code, signal })
 
-      // Reject all pending requests for this process
+      // Reject any sends that were still buffered waiting for startup
+      const queued = this.startupQueue.get(name) ?? []
+      this.startupQueue.delete(name)
+      for (const { reject } of queued) {
+        reject(new Error(`Python process '${name}' exited before becoming ready`))
+      }
+
+      // Reject only the pending requests that belong to this process
       for (const [id, pending] of this.pending) {
+        if (pending.processName !== name) continue
         pending.reject(new Error(`Python process '${name}' exited unexpectedly (code ${code})`))
         clearTimeout(pending.timeout)
         this.pending.delete(id)
@@ -143,8 +186,8 @@ export class PythonBridge extends EventEmitter {
     type: string,
     payload: unknown
   ): Promise<TResponse> {
-    const process = this.processes.get(name)
-    if (!process || !process.stdin?.writable) {
+    const proc = this.processes.get(name)
+    if (!proc || !proc.stdin?.writable) {
       return Promise.reject(new Error(`Python process '${name}' is not running`))
     }
 
@@ -152,24 +195,45 @@ export class PythonBridge extends EventEmitter {
     const message = JSON.stringify({ id, type, payload }) + '\n'
 
     return new Promise<TResponse>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`Python request '${type}' timed out after ${REQUEST_TIMEOUT_MS}ms`))
-      }, REQUEST_TIMEOUT_MS)
-
-      this.pending.set(id, {
-        resolve: resolve as (value: unknown) => void,
-        reject,
-        timeout
-      })
-
-      process.stdin!.write(message, (err) => {
-        if (err) {
-          clearTimeout(timeout)
-          this.pending.delete(id)
-          reject(err)
+      // Start timeout and write immediately once the process is ready.
+      // This ensures the 120 s clock only counts time Python is actually
+      // processing — not time spent loading model weights at startup.
+      const doWrite = () => {
+        const currentProc = this.processes.get(name)
+        if (!currentProc?.stdin?.writable) {
+          reject(new Error(`Python process '${name}' is not running`))
+          return
         }
-      })
+
+        const timeoutMs = PROCESS_TIMEOUT_MS[name] ?? REQUEST_TIMEOUT_MS
+        const timeout = setTimeout(() => {
+          this.pending.delete(id)
+          reject(new Error(`Python request '${type}' timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+
+        this.pending.set(id, {
+          processName: name,
+          resolve: resolve as (value: unknown) => void,
+          reject,
+          timeout
+        })
+
+        currentProc.stdin!.write(message, (err) => {
+          if (err) {
+            clearTimeout(timeout)
+            this.pending.delete(id)
+            reject(err)
+          }
+        })
+      }
+
+      if (this.processReady.get(name)) {
+        doWrite()
+      } else {
+        const queue = this.startupQueue.get(name) ?? []
+        queue.push({ doWrite, reject })
+        this.startupQueue.set(name, queue)
+      }
     })
   }
 

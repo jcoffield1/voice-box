@@ -7,6 +7,7 @@ interface SpeakerRow {
   name: string
   voice_embedding: Buffer | null
   embedding_dim: number
+  embedding_samples: number
   confidence_threshold: number
   recording_count: number
   created_at: number
@@ -18,13 +19,17 @@ interface SpeakerRow {
 function rowToSpeaker(row: SpeakerRow): SpeakerProfile {
   let voiceEmbedding: number[] | null = null
   if (row.voice_embedding) {
-    const floatArray = new Float32Array(row.voice_embedding.buffer)
+    // Node.js Buffer.buffer returns the pool-sized ArrayBuffer, not the slice.
+    // Must pass byteOffset + length so Float32Array reads only the stored bytes.
+    const buf = row.voice_embedding
+    const floatArray = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
     voiceEmbedding = Array.from(floatArray)
   }
   return {
     id: row.id,
     name: row.name,
     voiceEmbedding,
+    embeddingSamples: row.embedding_samples ?? 0,
     recordingCount: row.recording_count,
     firstSeenAt: row.created_at,
     lastSeenAt: row.last_seen_at ?? row.created_at,
@@ -54,7 +59,14 @@ export class SpeakerRepository {
 
   findById(id: string): SpeakerProfile | null {
     const row = this.db
-      .prepare<string, SpeakerRow>(`SELECT * FROM speaker_profiles WHERE id = ?`)
+      .prepare<string, SpeakerRow>(
+        `SELECT sp.*,
+                (SELECT COUNT(DISTINCT ts.recording_id)
+                 FROM transcript_segments ts
+                 WHERE ts.speaker_id = sp.id) AS recording_count
+         FROM speaker_profiles sp
+         WHERE sp.id = ?`
+      )
       .get(id)
     return row ? rowToSpeaker(row) : null
   }
@@ -69,7 +81,12 @@ export class SpeakerRepository {
   findAll(): SpeakerProfile[] {
     const rows = this.db
       .prepare<[], SpeakerRow>(
-        `SELECT * FROM speaker_profiles ORDER BY recording_count DESC, name ASC`
+        `SELECT sp.*,
+                (SELECT COUNT(DISTINCT ts.recording_id)
+                 FROM transcript_segments ts
+                 WHERE ts.speaker_id = sp.id) AS recording_count
+         FROM speaker_profiles sp
+         ORDER BY recording_count DESC, sp.name ASC`
       )
       .all()
     return rows.map(rowToSpeaker)
@@ -92,11 +109,17 @@ export class SpeakerRepository {
     return this.findById(id)
   }
 
-  updateVoiceEmbedding(id: string, embedding: number[]): void {
+  updateVoiceEmbedding(id: string, embedding: number[], samples: number): void {
     const buf = Buffer.from(new Float32Array(embedding).buffer)
     this.db
-      .prepare(`UPDATE speaker_profiles SET voice_embedding = ? WHERE id = ?`)
-      .run(buf, id)
+      .prepare(`UPDATE speaker_profiles SET voice_embedding = ?, embedding_samples = ? WHERE id = ?`)
+      .run(buf, samples, id)
+  }
+
+  resetVoiceEmbedding(id: string): void {
+    this.db
+      .prepare(`UPDATE speaker_profiles SET voice_embedding = NULL, embedding_samples = 0 WHERE id = ?`)
+      .run(id)
   }
 
   incrementRecordingCount(id: string): void {

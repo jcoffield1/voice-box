@@ -32,6 +32,21 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds }: P
 
   const [assignTarget, setAssignTarget] = useState<TranscriptSegment | null>(null)
   const [reviewMode, setReviewMode] = useState(false)
+  const diarizationError = useRecordingStore((s) => s.diarizationError)
+  const setDiarizationError = useRecordingStore((s) => s.setDiarizationError)
+  const postProcessingRecordingId = useRecordingStore((s) => s.postProcessingRecordingId)
+  const isPostProcessing = !isLive && postProcessingRecordingId === recordingId
+
+  // Reload transcript when diarization completes post-recording
+  useEffect(() => {
+    if (isLive) return
+    const removeDone = window.api.transcript.onDiarizationComplete(({ recordingId: diarRecId }) => {
+      if (diarRecId === recordingId) {
+        void useTranscriptStore.getState().loadTranscript(recordingId)
+      }
+    })
+    return () => { removeDone() }
+  }, [isLive, recordingId])
   const bottomRef = useRef<HTMLDivElement>(null)
   const segmentRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
@@ -75,6 +90,14 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds }: P
   }
 
   if (displaySegments.length === 0) {
+    if (isPostProcessing) {
+      return (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent/10 border border-accent/20 text-accent text-xs">
+          <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+          <span>Analyzing recording — identifying speakers and generating summary…</span>
+        </div>
+      )
+    }
     return (
       <div className="card flex-1 flex items-center justify-center text-zinc-500 text-sm">
         {isLive ? 'Waiting for speech…' : 'No transcript available.'}
@@ -84,6 +107,25 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds }: P
 
   return (
     <>
+      {/* Post-recording processing banner */}
+      {isPostProcessing && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent/10 border border-accent/20 text-accent text-xs">
+          <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+          <span>Analyzing recording — identifying speakers and generating summary…</span>
+        </div>
+      )}
+
+      {/* Diarization error banner */}
+      {diarizationError && (
+        <div className="flex items-start justify-between gap-3 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>{diarizationError}</span>
+          </div>
+          <button className="shrink-0 hover:text-red-200" onClick={() => setDiarizationError(null)}>✕</button>
+        </div>
+      )}
+
       {/* Low-confidence review banner */}
       {!isLive && lowConfidenceSegments.length > 0 && (
         <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
@@ -139,16 +181,19 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds }: P
         <SpeakerLabelModal
           segment={assignTarget}
           onClose={() => setAssignTarget(null)}
-          onSaved={async (speakerName) => {
-            // Pass the raw diarization ID (e.g. SPEAKER_00) or null.
-            // null tells the backend to update all segments with no speaker yet.
+          onSaved={async ({ speakerName, profileId }) => {
             await window.api.transcript.assignSpeaker({
               recordingId,
+              segmentId: assignTarget.id,
               speakerId: assignTarget.speakerId ?? null,
-              speakerName
+              speakerName,
+              profileId
             })
-            // Refetch
-            await useTranscriptStore.getState().loadTranscript(recordingId)
+            // Update the segment optimistically in the store — no full reload so
+            // scroll position is preserved. The background sweep will push any
+            // additional auto-assignments via speakersSwept.
+            const store = useTranscriptStore.getState()
+            store.updateSegment({ ...assignTarget, speakerName, speakerId: profileId ?? assignTarget.speakerId ?? speakerName })
             setAssignTarget(null)
           }}
         />

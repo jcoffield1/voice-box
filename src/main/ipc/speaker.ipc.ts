@@ -7,7 +7,8 @@ import type {
   RenameSpeakerArgs,
   DeleteSpeakerArgs,
   MergeSpeakersArgs,
-  UpdateSpeakerNotesArgs
+  UpdateSpeakerNotesArgs,
+  ResetVoiceArgs
 } from '@shared/ipc-types'
 import type { SpeakerRepository } from '../services/storage/repositories/SpeakerRepository'
 
@@ -42,5 +43,10 @@ export function registerSpeakerIpc(deps: SpeakerIpcDeps): void {
   ipcMain.handle(IPC.speaker.updateNotes, async (_event, args: UpdateSpeakerNotesArgs): Promise<GetSpeakerResult> => {
     const speaker = speakerRepo.updateNotes(args.speakerId, args.notes)
     return { speaker }
+  })
+
+  ipcMain.handle(IPC.speaker.resetVoice, async (_event, args: ResetVoiceArgs): Promise<GetSpeakerResult> => {
+    speakerRepo.resetVoiceEmbedding(args.speakerId)
+    return { speaker: speakerRepo.findById(args.speakerId) }
   })
 }

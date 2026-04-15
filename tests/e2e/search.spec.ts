@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { launchApp, closeApp } from './helpers/app'
+import { launchApp, closeApp, waitForHash } from './helpers/app'
 import type { ElectronApplication, Page } from '@playwright/test'
 
 let app: ElectronApplication
@@ -15,7 +15,7 @@ test.afterAll(async () => {
 
 test.beforeEach(async () => {
   await page.click('a[href^="#/search"]')
-  await page.waitForURL('**/#/search')
+  await waitForHash(page, '**/#/search')
 })
 
 test('search page renders heading and input', async () => {

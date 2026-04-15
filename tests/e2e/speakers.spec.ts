@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { launchApp, closeApp } from './helpers/app'
+import { launchApp, closeApp, waitForHash } from './helpers/app'
 import type { ElectronApplication, Page } from '@playwright/test'
 
 let app: ElectronApplication
@@ -17,7 +17,7 @@ test.beforeEach(async () => {
   // Navigate to the Speakers page via sidebar
   const speakersLink = page.locator('a[href^="#/speakers"]')
   await speakersLink.click()
-  await page.waitForURL('**/#/speakers')
+  await waitForHash(page, '**/#/speakers')
 })
 
 test('speakers page renders the Speakers heading', async () => {
@@ -37,14 +37,14 @@ test('shows empty state or speaker list', async () => {
 
 test('back-navigation returns to main page', async () => {
   await page.click('a[href^="#/recordings"]')
-  await page.waitForURL('**/#/recordings')
+  await waitForHash(page, '**/#/recordings')
   const url = page.url()
   expect(url).toContain('recordings')
 })
 
 test('speakers page is accessible from sidebar', async () => {
   // Already on speakers page in beforeEach — just confirm URL
-  await page.waitForURL('**/#/speakers')
+  await waitForHash(page, '**/#/speakers')
   expect(page.url()).toContain('speakers')
 })
 

@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Trash2, FileText, Clock, CheckCircle } from 'lucide-react'
+import { Trash2, FileText, Clock, CheckCircle, AlertTriangle, X } from 'lucide-react'
 import type { Recording } from '@shared/types'
 
 interface Props {
@@ -27,6 +28,8 @@ function statusColor(status: Recording['status']) {
 }
 
 export default function RecordingCard({ recording, onDelete }: Props) {
+  const [confirming, setConfirming] = useState(false)
+
   const created = new Date(recording.createdAt).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
@@ -90,11 +93,45 @@ export default function RecordingCard({ recording, onDelete }: Props) {
 
       <button
         className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-500 hover:text-red-400 p-1 rounded"
-        onClick={() => onDelete(recording.id)}
+        onClick={() => setConfirming(true)}
         title="Delete recording"
       >
         <Trash2 className="w-4 h-4" />
       </button>
+
+      {confirming && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirming(false) }}
+        >
+          <div className="card w-80 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-red-500/15 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4 text-red-400" />
+              </div>
+              <h2 className="font-semibold text-zinc-100">Delete recording?</h2>
+              <button className="btn-ghost p-1 ml-auto" onClick={() => setConfirming(false)}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-sm text-zinc-400">
+              <span className="font-medium text-zinc-200">{recording.title}</span> and its
+              transcript will be permanently deleted. This cannot be undone.
+            </p>
+
+            <div className="flex justify-end gap-2">
+              <button className="btn-ghost" onClick={() => setConfirming(false)}>Cancel</button>
+              <button
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 transition-colors"
+                onClick={() => { setConfirming(false); onDelete(recording.id) }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

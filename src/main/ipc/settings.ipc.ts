@@ -18,6 +18,7 @@ import type { SettingsRepository } from '../services/storage/repositories/Settin
 import type { AudioCaptureService } from '../services/audio/AudioCaptureService'
 import type { KeychainService } from '../services/security/KeychainService'
 import type { LLMService } from '../services/llm/LLMService'
+import type { PythonBridge } from '../python/PythonBridge'
 import type { LLMProviderType } from '@shared/types'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -32,10 +33,12 @@ interface SettingsIpcDeps {
   audio: AudioCaptureService
   keychain: KeychainService
   llm: LLMService
+  pythonBridge: PythonBridge
+  onHfTokenChange?: (hasToken: boolean) => void
 }
 
 export function registerSettingsIpc(deps: SettingsIpcDeps): void {
-  const { settings, audio, keychain, llm } = deps
+  const { settings, audio, keychain, llm, pythonBridge, onHfTokenChange } = deps
 
   ipcMain.handle(IPC.settings.get, async (_event, args: GetSettingArgs): Promise<GetSettingResult> => {
     return { value: settings.get(args.key) }
@@ -79,13 +82,26 @@ export function registerSettingsIpc(deps: SettingsIpcDeps): void {
 
   ipcMain.handle(IPC.settings.setApiKey, async (_event, args: SetApiKeyArgs): Promise<void> => {
     await keychain.setApiKey(args.provider, args.apiKey)
-    // Also update the in-memory provider so it takes effect immediately
-    llm.setApiKey(args.provider as LLMProviderType, args.apiKey)
+    // Update the in-memory provider so it takes effect immediately
+    if (args.provider === 'huggingface') {
+      pythonBridge.setEnv('HF_TOKEN', args.apiKey)
+      // Restart diarize process so it picks up the new token on next use
+      if (pythonBridge.isRunning('diarize')) pythonBridge.kill('diarize')
+      onHfTokenChange?.(!!args.apiKey)
+    } else {
+      llm.setApiKey(args.provider as LLMProviderType, args.apiKey)
+    }
   })
 
   ipcMain.handle(IPC.settings.deleteApiKey, async (_event, args: DeleteApiKeyArgs): Promise<void> => {
     await keychain.deleteApiKey(args.provider)
-    llm.setApiKey(args.provider as LLMProviderType, '')
+    if (args.provider === 'huggingface') {
+      pythonBridge.setEnv('HF_TOKEN', '')
+      if (pythonBridge.isRunning('diarize')) pythonBridge.kill('diarize')
+      onHfTokenChange?.(false)
+    } else {
+      llm.setApiKey(args.provider as LLMProviderType, '')
+    }
   })
 
   // ─── System status ───────────────────────────────────────────────────────

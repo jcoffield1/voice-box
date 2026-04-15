@@ -72,8 +72,11 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
 
   ipcMain.handle(IPC.recording.stop, async (_event, args: StopRecordingArgs): Promise<StopRecordingResult> => {
     audio.stop()
-    await queue.stop()
 
+    // Persist audioPath to the DB BEFORE calling queue.stop(). queue.stop() emits
+    // 'complete' synchronously, and the handler in index.ts reads recording.audioPath
+    // immediately (synchronous SQLite read). If we write audioPath afterwards the
+    // handler always sees null and skips diarization entirely.
     const audioPath = join(app.getPath('userData'), 'recordings', `${args.recordingId}.wav`)
     audio.saveAudio(audioPath)
 
@@ -83,6 +86,10 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
       duration: durationSeconds,
       audioPath
     })
+
+    // Flush remaining transcription — 'complete' fires here, index.ts will now
+    // find recording.audioPath already written and run the diarization pipeline.
+    await queue.stop()
 
     return { recordingId: args.recordingId, duration: recording?.duration ?? 0 }
   })

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { launchApp, closeApp } from './helpers/app'
+import { launchApp, closeApp, waitForHash } from './helpers/app'
 import type { ElectronApplication, Page } from '@playwright/test'
 
 let app: ElectronApplication
@@ -14,9 +14,14 @@ test.afterAll(async () => {
 })
 
 test.beforeEach(async () => {
+  // Dismiss any recording modal left open by a previous test
+  const cancelBtn = page.locator('button:has-text("Cancel")')
+  const modalOpen = await cancelBtn.isVisible({ timeout: 500 }).catch(() => false)
+  if (modalOpen) await cancelBtn.click()
+
   // Navigate to recordings page
   await page.click('a[href^="#/recordings"]')
-  await page.waitForURL('**/#/recordings')
+  await waitForHash(page, '**/#/recordings')
 })
 
 test('shows empty state when no recordings exist', async () => {
@@ -25,7 +30,7 @@ test('shows empty state when no recordings exist', async () => {
 
 test('clicking New Recording shows recording controls', async () => {
   await page.click('button:has-text("New Recording")')
-  await expect(page.locator('text=New Recording')).toBeVisible()
+  await expect(page.locator('h2:has-text("New Recording")')).toBeVisible()
   await expect(page.locator('button:has-text("Start Recording")')).toBeVisible()
 })
 
@@ -41,12 +46,12 @@ test('recording title input accepts text', async () => {
   await expect(page.locator('input[placeholder*="title"]')).toHaveValue('My Test Call')
 })
 
-test('Start Recording button is disabled while title is empty', async () => {
+test('Start Recording button is enabled even when title is empty', async () => {
   await page.click('button:has-text("New Recording")')
-  const titleInput = page.locator('input[placeholder*="title"]')
-  await titleInput.fill('')
   const startBtn = page.locator('button:has-text("Start Recording")')
-  await expect(startBtn).toBeDisabled()
+  // Title is optional (falls back to a generated timestamp), so the button
+  // remains enabled regardless of the title field value.
+  await expect(startBtn).toBeEnabled()
 })
 
 // ── Recording Detail Page ────────────────────────────────────────────────────
@@ -61,22 +66,22 @@ async function openFirstRecordingOrSkip() {
 
 test('recording detail page shows Transcript and Summary tabs', async () => {
   await page.click('a[href^="#/recordings"]')
-  await page.waitForURL('**/#/recordings')
+  await waitForHash(page, '**/#/recordings')
   const opened = await openFirstRecordingOrSkip()
   if (!opened) { test.skip(); return }
 
-  await page.waitForURL('**/#/recordings/**')
+  await waitForHash(page, '**/#/recordings/**')
   await expect(page.locator('button:has-text("Transcript")')).toBeVisible()
   await expect(page.locator('button:has-text("Summary")')).toBeVisible()
 })
 
 test('clicking Summary tab switches active view without crashing', async () => {
   await page.click('a[href^="#/recordings"]')
-  await page.waitForURL('**/#/recordings')
+  await waitForHash(page, '**/#/recordings')
   const opened = await openFirstRecordingOrSkip()
   if (!opened) { test.skip(); return }
 
-  await page.waitForURL('**/#/recordings/**')
+  await waitForHash(page, '**/#/recordings/**')
   await page.click('button:has-text("Summary")')
   // Page should not throw — either shows debrief content or placeholder
   await expect(page.locator('text=Something went wrong')).not.toBeVisible()
@@ -87,21 +92,21 @@ test('clicking Summary tab switches active view without crashing', async () => {
 
 test('recording detail page has an Export button', async () => {
   await page.click('a[href^="#/recordings"]')
-  await page.waitForURL('**/#/recordings')
+  await waitForHash(page, '**/#/recordings')
   const opened = await openFirstRecordingOrSkip()
   if (!opened) { test.skip(); return }
 
-  await page.waitForURL('**/#/recordings/**')
+  await waitForHash(page, '**/#/recordings/**')
   await expect(page.locator('button[title="Export"], button:has-text("Export")').first()).toBeVisible()
 })
 
 test('Export button reveals format options when clicked', async () => {
   await page.click('a[href^="#/recordings"]')
-  await page.waitForURL('**/#/recordings')
+  await waitForHash(page, '**/#/recordings')
   const opened = await openFirstRecordingOrSkip()
   if (!opened) { test.skip(); return }
 
-  await page.waitForURL('**/#/recordings/**')
+  await waitForHash(page, '**/#/recordings/**')
   const exportBtn = page.locator('button[title="Export"], button:has-text("Export")').first()
   await exportBtn.click()
   // Export options (txt/md/srt) should be visible
@@ -113,17 +118,17 @@ test('Export button reveals format options when clicked', async () => {
 
 test('detail page back arrow returns to recordings list', async () => {
   await page.click('a[href^="#/recordings"]')
-  await page.waitForURL('**/#/recordings')
+  await waitForHash(page, '**/#/recordings')
   const opened = await openFirstRecordingOrSkip()
   if (!opened) { test.skip(); return }
 
-  await page.waitForURL('**/#/recordings/**')
+  await waitForHash(page, '**/#/recordings/**')
   // Back button — typically an arrow button or link
   const backBtn = page.locator('button[title="Back"], button[aria-label="Back"], a[href^="#/recordings"]:not([href*="/recordings/"])').first()
   const hasBack = await backBtn.isVisible({ timeout: 2000 }).catch(() => false)
   if (!hasBack) { test.skip(); return }
 
   await backBtn.click()
-  await page.waitForURL('**/#/recordings')
+  await waitForHash(page, '**/#/recordings')
   expect(page.url()).not.toMatch(/\/recordings\/[^/]/)
 })

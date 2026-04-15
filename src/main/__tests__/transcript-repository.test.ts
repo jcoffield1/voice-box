@@ -149,4 +149,139 @@ describe('TranscriptRepository', () => {
     expect(results.length).toBeGreaterThan(0)
     expect(results[0].recordingTitle).toBeTruthy()
   })
+
+  // ── setRawSpeakerId guard ─────────────────────────────────────────────────
+
+  it('setRawSpeakerId assigns when speaker_id is NULL', () => {
+    const seg = repo.create({ recordingId, text: 'No speaker', timestampStart: 0, timestampEnd: 1 })
+    repo.setRawSpeakerId(seg.id, 'SPEAKER_00')
+    expect(repo.findById(seg.id)!.speakerId).toBe('SPEAKER_00')
+  })
+
+  it('setRawSpeakerId overwrites an existing SPEAKER_XX label', () => {
+    const seg = repo.create({ recordingId, text: 'Old label', timestampStart: 0, timestampEnd: 1, speakerId: 'SPEAKER_01' })
+    repo.setRawSpeakerId(seg.id, 'SPEAKER_00')
+    expect(repo.findById(seg.id)!.speakerId).toBe('SPEAKER_00')
+  })
+
+  it('setRawSpeakerId does NOT overwrite a manually confirmed speaker profile', () => {
+    const db = getDatabase()
+    const speakerRepo = new SpeakerRepository(db)
+    const profile = speakerRepo.create('Jason')
+    const seg = repo.create({ recordingId, text: 'Confirmed', timestampStart: 0, timestampEnd: 1, speakerId: profile.id, speakerName: 'Jason' })
+
+    repo.setRawSpeakerId(seg.id, 'SPEAKER_03')
+
+    const found = repo.findById(seg.id)!
+    expect(found.speakerId).toBe(profile.id)
+    expect(found.speakerName).toBe('Jason')
+  })
+
+  // ── findNullSpeakerSegments ──────────────────────────────────────────────
+
+  it('findNullSpeakerSegments returns only segments with NULL speaker_id', () => {
+    repo.create({ recordingId, text: 'No speaker', timestampStart: 0, timestampEnd: 1 })
+    repo.create({ recordingId, text: 'Also null', timestampStart: 1, timestampEnd: 2 })
+    repo.create({ recordingId, text: 'Has label', timestampStart: 2, timestampEnd: 3, speakerId: 'SPEAKER_00', speakerName: 'SPEAKER_00' })
+
+    const nullSegs = repo.findNullSpeakerSegments(recordingId)
+    expect(nullSegs.length).toBe(2)
+    expect(nullSegs.every((s) => 'id' in s && 'timestampStart' in s && 'timestampEnd' in s)).toBe(true)
+  })
+
+  it('findNullSpeakerSegments returns empty array when all segments have a speaker', () => {
+    repo.create({ recordingId, text: 'Labeled', timestampStart: 0, timestampEnd: 1, speakerId: 'SPEAKER_00', speakerName: 'SPEAKER_00' })
+    expect(repo.findNullSpeakerSegments(recordingId)).toHaveLength(0)
+  })
+
+  // ── assignSpeakerToSegmentWithConfidence ─────────────────────────────────
+
+  it('assignSpeakerToSegmentWithConfidence persists speaker and confidence to a single segment', () => {
+    const db = getDatabase()
+    const speakerRepo = new SpeakerRepository(db)
+    const profile = speakerRepo.create('Bob')
+    const seg = repo.create({ recordingId, text: 'Sweep me', timestampStart: 0, timestampEnd: 1 })
+
+    repo.assignSpeakerToSegmentWithConfidence(seg.id, profile.id, 'Bob', 0.91)
+
+    const found = repo.findById(seg.id)!
+    expect(found.speakerId).toBe(profile.id)
+    expect(found.speakerName).toBe('Bob')
+    expect(found.speakerConfidence).toBeCloseTo(0.91)
+  })
+
+  it('assignSpeakerToSegmentWithConfidence does not affect other segments', () => {
+    const db = getDatabase()
+    const speakerRepo = new SpeakerRepository(db)
+    const profile = speakerRepo.create('Carol')
+    const segA = repo.create({ recordingId, text: 'A', timestampStart: 0, timestampEnd: 1 })
+    const segB = repo.create({ recordingId, text: 'B', timestampStart: 1, timestampEnd: 2 })
+
+    repo.assignSpeakerToSegmentWithConfidence(segA.id, profile.id, 'Carol', 0.88)
+
+    expect(repo.findById(segB.id)!.speakerId).toBeNull()
+  })
+
+  // ── findManuallyConfirmedSpeakers ────────────────────────────────────────
+
+  it('findManuallyConfirmedSpeakers returns empty array when no confirmed speakers exist', () => {
+    repo.create({ recordingId, text: 'Unlabeled', timestampStart: 0, timestampEnd: 1 })
+    repo.create({ recordingId, text: 'Raw label', timestampStart: 1, timestampEnd: 2, speakerId: 'SPEAKER_00', speakerName: 'SPEAKER_00' })
+    expect(repo.findManuallyConfirmedSpeakers(recordingId)).toHaveLength(0)
+  })
+
+  it('findManuallyConfirmedSpeakers groups time ranges by speakerId', () => {
+    const db = getDatabase()
+    const speakerRepo = new SpeakerRepository(db)
+    const alice = speakerRepo.create('Alice')
+    const bob = speakerRepo.create('Bob')
+
+    repo.create({ recordingId, text: 'A1', timestampStart: 0, timestampEnd: 2, speakerId: alice.id, speakerName: 'Alice' })
+    repo.create({ recordingId, text: 'A2', timestampStart: 5, timestampEnd: 7, speakerId: alice.id, speakerName: 'Alice' })
+    repo.create({ recordingId, text: 'B1', timestampStart: 2, timestampEnd: 4, speakerId: bob.id, speakerName: 'Bob' })
+
+    const result = repo.findManuallyConfirmedSpeakers(recordingId)
+    expect(result).toHaveLength(2)
+
+    const aliceEntry = result.find((r) => r.speakerId === alice.id)!
+    expect(aliceEntry.timeRanges).toHaveLength(2)
+    expect(aliceEntry.timeRanges[0]).toEqual({ start: 0, end: 2 })
+    expect(aliceEntry.timeRanges[1]).toEqual({ start: 5, end: 7 })
+
+    const bobEntry = result.find((r) => r.speakerId === bob.id)!
+    expect(bobEntry.timeRanges).toHaveLength(1)
+  })
+
+  it('findManuallyConfirmedSpeakers excludes SPEAKER_XX and NULL-speaker segments', () => {
+    const db = getDatabase()
+    const speakerRepo = new SpeakerRepository(db)
+    const alice = speakerRepo.create('Alice')
+
+    repo.create({ recordingId, text: 'Confirmed', timestampStart: 0, timestampEnd: 1, speakerId: alice.id, speakerName: 'Alice' })
+    repo.create({ recordingId, text: 'Raw', timestampStart: 1, timestampEnd: 2, speakerId: 'SPEAKER_00', speakerName: 'SPEAKER_00' })
+    repo.create({ recordingId, text: 'Null', timestampStart: 2, timestampEnd: 3 })
+
+    const result = repo.findManuallyConfirmedSpeakers(recordingId)
+    expect(result).toHaveLength(1)
+    expect(result[0].speakerId).toBe(alice.id)
+  })
+
+  it('findManuallyConfirmedSpeakers only scopes to the given recordingId', () => {
+    const db = getDatabase()
+    const recRepo = new RecordingRepository(db)
+    const speakerRepo = new SpeakerRepository(db)
+    const otherRec = recRepo.create('Other Recording')
+    const alice = speakerRepo.create('Alice')
+
+    // Alice in this recording
+    repo.create({ recordingId, text: 'Mine', timestampStart: 0, timestampEnd: 1, speakerId: alice.id, speakerName: 'Alice' })
+    // Alice in a different recording
+    const otherRepo = new TranscriptRepository(db)
+    otherRepo.create({ recordingId: otherRec.id, text: 'Other', timestampStart: 0, timestampEnd: 1, speakerId: alice.id, speakerName: 'Alice' })
+
+    const result = repo.findManuallyConfirmedSpeakers(recordingId)
+    expect(result).toHaveLength(1)
+    expect(result[0].speakerId).toBe(alice.id)
+    expect(result[0].timeRanges).toHaveLength(1)
+  })
 })

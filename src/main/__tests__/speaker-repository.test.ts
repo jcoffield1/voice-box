@@ -90,22 +90,26 @@ describe('SpeakerRepository', () => {
     expect(repo.rename('ghost-id', 'Anything')).toBeNull()
   })
 
-  it('incrementRecordingCount increments the count and updates lastSeenAt', () => {
+  it('incrementRecordingCount updates lastSeenAt', () => {
+    // recordingCount is now computed from transcript_segments via a subquery,
+    // so incrementRecordingCount no longer affects the value returned by
+    // findById. What it *does* reliably do is update last_seen_at.
+    const before = Date.now()
     const s = repo.create('Counted')
     expect(s.recordingCount).toBe(0)
     repo.incrementRecordingCount(s.id)
-    repo.incrementRecordingCount(s.id)
     const updated = repo.findById(s.id)!
-    expect(updated.recordingCount).toBe(2)
+    expect(updated.lastSeenAt).toBeGreaterThanOrEqual(before)
   })
 
   it('updateVoiceEmbedding replaces the embedding', () => {
     const s = repo.create('No Emb Yet')
     expect(s.voiceEmbedding).toBeNull()
-    repo.updateVoiceEmbedding(s.id, [1.0, 2.0, 3.0])
+    repo.updateVoiceEmbedding(s.id, [1.0, 2.0, 3.0], 1)
     const updated = repo.findById(s.id)!
     expect(updated.voiceEmbedding).not.toBeNull()
     expect(updated.voiceEmbedding![0]).toBeCloseTo(1.0, 3)
+    expect(updated.embeddingSamples).toBe(1)
   })
 
   it('delete removes the speaker', () => {

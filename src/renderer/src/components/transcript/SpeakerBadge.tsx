@@ -1,5 +1,6 @@
 interface Props {
   name: string | null | undefined
+  confidence?: number | null
 }
 
 const COLORS = [
@@ -17,16 +18,29 @@ function colorForLabel(label: string) {
   return COLORS[h % COLORS.length]
 }
 
-export default function SpeakerBadge({ name }: Props) {
+export default function SpeakerBadge({ name, confidence }: Props) {
   if (!name) return null
   const color = colorForLabel(name)
+  const pct = confidence != null ? Math.round(confidence * 100) : null
 
   return (
-    <span
-      className={`inline-block text-xs px-2 py-0.5 rounded-full border truncate max-w-full ${color}`}
-      title={name}
-    >
-      {name}
-    </span>
+    <div className="flex flex-col items-start gap-0.5">
+      <span
+        className={`inline-block text-xs px-2 py-0.5 rounded-full border truncate max-w-full ${color}`}
+        title={name}
+      >
+        {name}
+      </span>
+      {pct != null && (
+        <span
+          className={`text-[10px] font-mono pl-0.5 ${
+            pct < 70 ? 'text-amber-400' : 'text-zinc-500'
+          }`}
+          title={`Speaker confidence: ${pct}%`}
+        >
+          {pct}%
+        </span>
+      )}
+    </div>
   )
 }

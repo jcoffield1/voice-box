@@ -98,6 +98,7 @@ def handle_request(request: dict) -> dict:
 
 
 def main():
+    print(json.dumps({"startup": "ready"}), flush=True)
     for line in sys.stdin:
         line = line.strip()
         if not line:

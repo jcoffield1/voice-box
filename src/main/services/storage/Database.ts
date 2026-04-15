@@ -1,5 +1,8 @@
 import Database from 'better-sqlite3'
-import * as sqliteVec from 'sqlite-vec'
+// sqlite-vec is NOT imported at the module level — its native .node addon calls
+// dlopen() during module initialisation, which hangs under macOS SIP/Gatekeeper
+// when running outside the Electron sandbox (e.g. Vitest workers).
+// It is required() lazily only in the production code-path below.
 import { app } from 'electron'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
@@ -32,11 +35,17 @@ export function initDatabase(dbPath?: string): Database.Database {
   // open (asar is a single-file archive). For packaged builds we remap to the
   // real filesystem copy in app.asar.unpacked, which electron-builder places
   // there because we listed "**/sqlite-vec-*/**" in asarUnpack.
-  const rawVecPath = sqliteVec.getLoadablePath()
-  const vecPath = app.isPackaged
-    ? rawVecPath.replace(/app\.asar([/\\])/, 'app.asar.unpacked$1')
-    : rawVecPath
-  db.loadExtension(vecPath)
+  // Skip in test environments — sqlite-vec's native addon hangs under macOS
+  // SIP/Gatekeeper when dlopen()'d outside the Electron sandbox.
+  if (!process.env.VITEST) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const sv = require('sqlite-vec') as { getLoadablePath: () => string }
+    const rawVecPath = sv.getLoadablePath()
+    const vecPath = app.isPackaged
+      ? rawVecPath.replace(/app\.asar([/\\])/, 'app.asar.unpacked$1')
+      : rawVecPath
+    db.loadExtension(vecPath)
+  }
 
   // Performance settings
   db.pragma('journal_mode = WAL')
@@ -178,7 +187,27 @@ const MIGRATIONS: Migration[] = [
   {
     version: 6,
     name: 'create_transcript_embeddings',
-    up: `
+    // In test environments sqlite-vec is not loaded, so skip the vec0 virtual
+    // table DDL — SQLite would try to dlopen() the extension on disk and hang.
+    up: process.env.VITEST
+      ? `
+      -- In test mode sqlite-vec is not loaded, so create a plain table that
+      -- mirrors the vec0 schema for CRUD operations (no vector search needed).
+      CREATE TABLE IF NOT EXISTS transcript_embeddings (
+        segment_id TEXT PRIMARY KEY,
+        embedding  BLOB
+      );
+
+      CREATE TABLE IF NOT EXISTS embedding_metadata (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        model_id   TEXT NOT NULL,
+        provider   TEXT NOT NULL,
+        dimension  INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        is_active  INTEGER DEFAULT 1
+      );
+    `
+      : `
       CREATE VIRTUAL TABLE IF NOT EXISTS transcript_embeddings USING vec0(
         segment_id TEXT PRIMARY KEY,
         embedding  FLOAT[768]
@@ -269,6 +298,88 @@ const MIGRATIONS: Migration[] = [
     up: `
       ALTER TABLE recordings ADD COLUMN debrief TEXT;
       ALTER TABLE recordings ADD COLUMN debrief_at INTEGER;
+    `
+  },
+  {
+    version: 11,
+    name: 'drop_speaker_id_fk_constraint',
+    up: `
+      -- speaker_id is used for both raw diarization labels (e.g. SPEAKER_00)
+      -- and resolved speaker profile UUIDs. The FK constraint prevents raw labels
+      -- from being stored, breaking the diarization pipeline. Remove it.
+      -- SQLite does not support ALTER TABLE DROP CONSTRAINT, so we recreate the table.
+
+      DROP TRIGGER IF EXISTS segments_ai;
+      DROP TRIGGER IF EXISTS segments_au;
+      DROP TRIGGER IF EXISTS segments_ad;
+
+      CREATE TABLE transcript_segments_new (
+        id                  TEXT PRIMARY KEY,
+        recording_id        TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        text                TEXT NOT NULL,
+        speaker_id          TEXT,
+        speaker_name        TEXT,
+        speaker_confidence  REAL,
+        timestamp_start     REAL NOT NULL,
+        timestamp_end       REAL NOT NULL,
+        whisper_confidence  REAL,
+        is_edited           INTEGER DEFAULT 0,
+        created_at          INTEGER NOT NULL
+      );
+
+      INSERT INTO transcript_segments_new SELECT * FROM transcript_segments;
+
+      DROP TABLE transcript_segments;
+
+      ALTER TABLE transcript_segments_new RENAME TO transcript_segments;
+
+      CREATE INDEX IF NOT EXISTS idx_segments_recording
+        ON transcript_segments(recording_id);
+      CREATE INDEX IF NOT EXISTS idx_segments_speaker
+        ON transcript_segments(speaker_name);
+      CREATE INDEX IF NOT EXISTS idx_segments_timestamp
+        ON transcript_segments(recording_id, timestamp_start);
+
+      CREATE TRIGGER IF NOT EXISTS segments_ai
+        AFTER INSERT ON transcript_segments BEGIN
+          INSERT INTO transcript_fts(rowid, text, speaker_name)
+          VALUES (new.rowid, new.text, new.speaker_name);
+        END;
+
+      CREATE TRIGGER IF NOT EXISTS segments_au
+        AFTER UPDATE ON transcript_segments BEGIN
+          INSERT INTO transcript_fts(transcript_fts, rowid, text, speaker_name)
+          VALUES ('delete', old.rowid, old.text, old.speaker_name);
+          INSERT INTO transcript_fts(rowid, text, speaker_name)
+          VALUES (new.rowid, new.text, new.speaker_name);
+        END;
+
+      CREATE TRIGGER IF NOT EXISTS segments_ad
+        AFTER DELETE ON transcript_segments BEGIN
+          INSERT INTO transcript_fts(transcript_fts, rowid, text, speaker_name)
+          VALUES ('delete', old.rowid, old.text, old.speaker_name);
+        END;
+    `
+  },
+  {
+    version: 12,
+    name: 'add_embedding_samples_to_speakers',
+    up: `
+      -- Track how many audio samples have been averaged into each speaker's
+      -- voice embedding so learnSpeaker can use a proper running mean instead
+      -- of the broken (old + new) / 2 formula that exponentially discards all
+      -- historical data after enough updates.
+      --
+      -- Existing speakers that already have an embedding are seeded at 30
+      -- (the cap used by learnSpeaker) so their model is treated as fully
+      -- trained and new recordings only contribute ~3% weight — preventing
+      -- further corruption of an already well-trained voice print.
+      ALTER TABLE speaker_profiles
+        ADD COLUMN embedding_samples INTEGER NOT NULL DEFAULT 0;
+
+      UPDATE speaker_profiles
+        SET embedding_samples = 30
+        WHERE voice_embedding IS NOT NULL;
     `
   }
 ]

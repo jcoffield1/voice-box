@@ -37,6 +37,10 @@ export interface SpeakerProfile {
   id: string
   name: string
   voiceEmbedding: number[] | null
+  /** Number of audio samples that have been averaged into voiceEmbedding. Used
+   *  by learnSpeaker to compute a proper running mean capped at EMBEDDING_SAMPLE_CAP
+   *  so old recordings are not exponentially discarded. */
+  embeddingSamples: number
   recordingCount: number
   firstSeenAt: number
   lastSeenAt: number

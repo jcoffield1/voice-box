@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import RecordingControls from '../components/recording/RecordingControls'
+import LiveRecordingModal from '../components/recording/LiveRecordingModal'
 import RecordingList from '../components/recording/RecordingList'
 import { useRecording } from '../hooks/useRecording'
 import { Mic, Clock, FileText, AlertTriangle, CheckCircle } from 'lucide-react'
@@ -111,14 +111,14 @@ export default function Dashboard() {
         <h1 className="text-xl font-semibold text-zinc-100">Recordings</h1>
         <button
           className="btn-primary"
-          onClick={() => setShowControls((v) => !v)}
+          onClick={() => setShowControls(true)}
         >
-          {showControls ? 'Cancel' : 'New Recording'}
+          New Recording
         </button>
       </div>
 
       {showControls && (
-        <RecordingControls onDismiss={() => setShowControls(false)} />
+        <LiveRecordingModal onClose={() => setShowControls(false)} />
       )}
 
       <RecordingList

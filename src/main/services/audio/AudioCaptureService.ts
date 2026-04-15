@@ -203,6 +203,30 @@ export class AudioCaptureService extends EventEmitter {
     mkdirSync(dirname(filePath), { recursive: true })
     writeFileSync(filePath, wav)
   }
+
+  /** Write a WAV snapshot of the current buffer without stopping the recording. */
+  saveSnapshot(filePath: string): void {
+    this.saveAudio(filePath)
+  }
+
+  /**
+   * Write a WAV snapshot for a specific time window within the current recording.
+   * More efficient than saveSnapshot — only the PCM data for [startSeconds, endSeconds]
+   * is written, rather than the entire buffer.
+   */
+  saveSegmentSnapshot(filePath: string, startSeconds: number, endSeconds: number): void {
+    if (!this.recordConfig || this.recordBuffer.length === 0) return
+    const { sampleRate, channels } = this.recordConfig
+    const allPcm = Buffer.concat(this.recordBuffer)
+    const bytesPerSec = sampleRate * channels * 2
+    const startByte = Math.max(0, Math.floor(startSeconds * bytesPerSec))
+    const endByte = Math.min(allPcm.length, Math.ceil(endSeconds * bytesPerSec))
+    if (endByte <= startByte) return
+    const pcmSlice = allPcm.slice(startByte, endByte)
+    const wav = buildWav(pcmSlice, sampleRate, channels)
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeFileSync(filePath, wav)
+  }
 }
 
 function buildWav(pcm: Buffer, sampleRate: number, channels: number): Buffer {

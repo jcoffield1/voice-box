@@ -17,6 +17,10 @@ import type {
   UpdateSegmentArgs,
   AssignSpeakerArgs,
   AssignSpeakerResult,
+  RankSpeakersArgs,
+  RankSpeakersResult,
+  SweepSpeakersArgs,
+  SweepSpeakersResult,
   SearchArgs,
   SearchResult_,
   ReindexArgs,
@@ -59,9 +63,10 @@ import type {
   DeleteSpeakerArgs,
   MergeSpeakersArgs,
   UpdateSpeakerNotesArgs,
+  ResetVoiceArgs,
   RecordingDebriefReadyPayload
 } from '../shared/ipc-types'
-import type { TranscriptSegment, ConversationMessage } from '../shared/types'
+import type { TranscriptSegment } from '../shared/types'
 
 // Type-safe IPC invoke helper
 function invoke<TResult>(channel: string, args?: unknown): Promise<TResult> {
@@ -93,7 +98,9 @@ const api = {
     export: (args: ExportTranscriptArgs) =>
       invoke<ExportTranscriptResult>(IPC.recording.export, args),
     onDebriefReady: (cb: (payload: RecordingDebriefReadyPayload) => void) =>
-      on(IPC.recording.debriefReady, cb as (...args: unknown[]) => void)
+      on(IPC.recording.debriefReady, cb as (...args: unknown[]) => void),
+    onProcessed: (cb: (payload: { recordingId: string }) => void) =>
+      on(IPC.recording.processed, cb as (...args: unknown[]) => void)
   },
 
   // ─── Transcript ───────────────────────────────────────────────────────────
@@ -104,8 +111,18 @@ const api = {
       invoke<void>(IPC.transcript.updateSegment, args),
     assignSpeaker: (args: AssignSpeakerArgs) =>
       invoke<AssignSpeakerResult>(IPC.transcript.assignSpeaker, args),
+    rankSpeakers: (args: RankSpeakersArgs) =>
+      invoke<RankSpeakersResult>(IPC.transcript.rankSpeakers, args),
+    sweepSpeakers: (args: SweepSpeakersArgs) =>
+      invoke<SweepSpeakersResult>(IPC.transcript.sweepSpeakers, args),
     onSegmentAdded: (cb: (segment: TranscriptSegment) => void) =>
-      on(IPC.transcript.segmentAdded, cb as (...args: unknown[]) => void)
+      on(IPC.transcript.segmentAdded, cb as (...args: unknown[]) => void),
+    onDiarizationComplete: (cb: (data: { recordingId: string }) => void) =>
+      on(IPC.transcript.diarizationComplete, cb as (...args: unknown[]) => void),
+    onSpeakersSwept: (cb: (data: { recordingId: string; segments: TranscriptSegment[] }) => void) =>
+      on(IPC.transcript.speakersSwept, cb as (...args: unknown[]) => void),
+    onDiarizationError: (cb: (data: { type: string; message: string }) => void) =>
+      on('diarization:error', cb as (...args: unknown[]) => void)
   },
 
   // ─── Search ───────────────────────────────────────────────────────────────
@@ -177,7 +194,8 @@ const api = {
     rename: (args: RenameSpeakerArgs) => invoke<GetSpeakerResult>(IPC.speaker.rename, args),
     delete: (args: DeleteSpeakerArgs) => invoke<void>(IPC.speaker.delete, args),
     merge: (args: MergeSpeakersArgs) => invoke<void>(IPC.speaker.merge, args),
-    updateNotes: (args: UpdateSpeakerNotesArgs) => invoke<GetSpeakerResult>(IPC.speaker.updateNotes, args)
+    updateNotes: (args: UpdateSpeakerNotesArgs) => invoke<GetSpeakerResult>(IPC.speaker.updateNotes, args),
+    resetVoice: (args: ResetVoiceArgs) => invoke<GetSpeakerResult>(IPC.speaker.resetVoice, args)
   },
 
   // ─── Audio events ─────────────────────────────────────────────────────────

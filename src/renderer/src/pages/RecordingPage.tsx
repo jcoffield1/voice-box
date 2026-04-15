@@ -147,7 +147,9 @@ export default function RecordingPage() {
   const isGeneratingDebrief = (recording?.status === 'processing' || recording?.status === 'complete') && !recording?.debrief
 
   // ── Summary tab content (shared between normal + maximized views) ──────────
-  const SummaryContent = () => (
+  // NOTE: stored as a JSX element, not a function component, so it is never
+  // unmounted when RecordingPage re-renders (e.g. when debrief arrives).
+  const summaryContent = (
     <div className="space-y-4">
       {recording?.debrief ? (
         <div className="selectable text-sm text-zinc-300 leading-relaxed [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-zinc-100 [&_h1]:mt-4 [&_h1]:mb-1 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-zinc-100 [&_h2]:mt-4 [&_h2]:mb-1 [&_h3]:text-sm [&_h3]:font-medium [&_h3]:text-zinc-200 [&_h3]:mt-3 [&_h3]:mb-1 [&_p]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:mb-2 [&_li]:mb-0.5 [&_strong]:text-zinc-100 [&_strong]:font-semibold [&_table]:w-full [&_table]:text-xs [&_table]:border-collapse [&_th]:text-left [&_th]:text-zinc-400 [&_th]:pb-1 [&_th]:border-b [&_th]:border-surface-600 [&_td]:py-1 [&_td]:pr-4 [&_td]:border-b [&_td]:border-surface-700 [&_hr]:border-surface-600 [&_hr]:my-3 [&_blockquote]:border-l-2 [&_blockquote]:border-accent [&_blockquote]:pl-3 [&_blockquote]:text-zinc-400">
@@ -176,7 +178,9 @@ export default function RecordingPage() {
   )
 
   // ── Transcript tab content (shared between normal + maximized views) ───────
-  const TranscriptTabContent = () => (
+  // NOTE: stored as a JSX element so TranscriptView (which owns the speaker-
+  // label modal state) is never unmounted on RecordingPage re-renders.
+  const transcriptTabContent = (
     <div className="space-y-4">
       <TranscriptView recordingId={id} isLive={isLive} jumpToSeconds={jumpToMs != null ? jumpToMs / 1000 : undefined} />
 
@@ -253,7 +257,7 @@ export default function RecordingPage() {
               <Minimize2 className="w-4 h-4" />
             </button>
           </div>
-          {activeTab === 'transcript' ? <TranscriptTabContent /> : <SummaryContent />}
+          {activeTab === 'transcript' ? transcriptTabContent : summaryContent}
         </div>
       )}
 
@@ -393,7 +397,7 @@ export default function RecordingPage() {
 
           {/* Tab content */}
           <div className="flex-1 overflow-y-auto">
-            {activeTab === 'transcript' ? <TranscriptTabContent /> : <SummaryContent />}
+            {activeTab === 'transcript' ? transcriptTabContent : summaryContent}
           </div>
         </div>
 

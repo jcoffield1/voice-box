@@ -16,11 +16,15 @@ import type { IpcMainInvokeEvent } from 'electron'
 
 const evt = {} as IpcMainInvokeEvent
 
+// Fixed timestamp so makeRecording() always returns the same value regardless
+// of when it is called, preventing 1ms flakiness in toEqual assertions.
+const FIXED_CREATED_AT = 1_700_000_000_000
+
 function makeRecording(overrides?: Partial<Recording>): Recording {
   return {
     id: 'rec-1',
     title: 'Test Recording',
-    createdAt: Date.now() - 5000,
+    createdAt: FIXED_CREATED_AT,
     status: 'complete',
     duration: 5,
     audioPath: null,

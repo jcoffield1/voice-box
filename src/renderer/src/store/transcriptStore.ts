@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { TranscriptSegment } from '@shared/types'
+import { useRecordingStore } from './recordingStore'
 
 interface TranscriptState {
   segmentsByRecording: Record<string, TranscriptSegment[]>
@@ -45,6 +46,11 @@ export const useTranscriptStore = create<TranscriptState>((set, get) => ({
     } finally {
       get().setLoading(recordingId, false)
     }
+
+    // Kick off a background speaker sweep — auto-assigns any segments where a
+    // stored voice embedding matches at ≥85%.  The push event handler below will
+    // update the store once the sweep completes.
+    void window.api.transcript.sweepSpeakers({ recordingId }).catch(() => {/* non-critical */})
   },
 
   editSegment: async (segmentId, text) => {
@@ -57,3 +63,25 @@ export const useTranscriptStore = create<TranscriptState>((set, get) => ({
     }
   }
 }))
+
+// Push event: main process completed a background speaker sweep — replace segment list.
+// Also patch liveSegments during active recording so the live view reflects auto-assignments.
+window.api.transcript.onSpeakersSwept(({ recordingId, segments }) => {
+  useTranscriptStore.getState().setSegments(recordingId, segments)
+
+  // If this recording is currently live, update each liveSegment that was auto-assigned
+  const recStore = useRecordingStore.getState()
+  if (recStore.activeRecordingId === recordingId && recStore.isRecording) {
+    const byId = new Map(segments.map((s) => [s.id, s]))
+    for (const liveSeg of recStore.liveSegments) {
+      const updated = byId.get(liveSeg.id)
+      if (updated && updated.speakerId !== liveSeg.speakerId) {
+        recStore.updateLiveSegment(liveSeg.id, {
+          speakerId: updated.speakerId,
+          speakerName: updated.speakerName,
+          speakerConfidence: updated.speakerConfidence,
+        })
+      }
+    }
+  }
+})

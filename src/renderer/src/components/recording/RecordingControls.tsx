@@ -3,6 +3,7 @@ import { Mic, Square, Monitor } from 'lucide-react'
 import { useRecordingStore } from '../../store/recordingStore'
 import { useSettingsStore } from '../../store/settingsStore'
 import AudioLevelBar from './AudioLevelBar'
+import { useMicPreview } from '../../hooks/useMicPreview'
 
 interface Props {
   onDismiss: () => void
@@ -15,6 +16,7 @@ export default function RecordingControls({ onDismiss }: Props) {
   const [startError, setStartError] = useState<string | null>(null)
   const { isRecording, audioLevel, startRecording, stopRecording } = useRecordingStore()
   const { selectedInputDeviceId, audioDevices } = useSettingsStore()
+  const micPreviewLevel = useMicPreview(selectedInputDeviceId, !isRecording && !starting)
 
   const handleStart = async () => {
     setStartError(null)
@@ -98,7 +100,7 @@ export default function RecordingControls({ onDismiss }: Props) {
       {startError && (
         <p className="text-xs text-red-400 leading-snug">{startError}</p>
       )}
-      <div className="flex gap-2">
+      <div className="flex items-center gap-3">
         <button className="btn-primary" onClick={handleStart} disabled={starting}>
           <Mic className="w-4 h-4" />
           {starting ? 'Starting…' : 'Start Recording'}
@@ -106,6 +108,10 @@ export default function RecordingControls({ onDismiss }: Props) {
         <button className="btn-ghost" onClick={onDismiss}>
           Cancel
         </button>
+        <div className="flex items-center gap-2 ml-1">
+          <Mic className={`w-3.5 h-3.5 transition-colors ${micPreviewLevel > 0.05 ? 'text-accent' : 'text-zinc-600'}`} />
+          <AudioLevelBar level={micPreviewLevel} />
+        </div>
       </div>
     </div>
   )

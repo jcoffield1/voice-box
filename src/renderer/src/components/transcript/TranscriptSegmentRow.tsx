@@ -42,7 +42,7 @@ export default function TranscriptSegmentRow({ segment, onLabelSpeaker }: Props)
 
       {/* Speaker badge */}
       <div className="w-24 shrink-0">
-        <SpeakerBadge name={segment.speakerName} />
+        <SpeakerBadge name={segment.speakerName} confidence={segment.speakerConfidence} />
       </div>
 
       {/* Text */}

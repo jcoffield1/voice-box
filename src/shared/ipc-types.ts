@@ -14,9 +14,6 @@ import type {
   LLMModel,
   LLMProviderType,
   LLMFeature,
-  CompletionRequest,
-  CompletionResponse,
-  ChatMessage
 } from './types'
 
 // ─── Recording IPC ───────────────────────────────────────────────────────────
@@ -84,12 +81,40 @@ export interface UpdateSegmentArgs {
 
 export interface AssignSpeakerArgs {
   recordingId: string
-  speakerId: string | null  // null when no diarization ran (no SPEAKER_xx label)
+  segmentId: string          // The specific segment the user clicked
+  speakerId: string | null   // Raw diarization label (SPEAKER_00) or resolved profile UUID or null
   speakerName: string
+  profileId?: string         // If provided, use this exact profile UUID (no name lookup)
 }
 
 export interface AssignSpeakerResult {
   updatedSegments: number
+}
+
+export interface RankSpeakersArgs {
+  recordingId: string
+  segmentId: string
+}
+
+export interface RankedSpeakerCandidate {
+  speakerId: string
+  speakerName: string
+  confidence: number
+  /** true = ranked by voice similarity; false = fallback (recently active, no embedding data) */
+  isVoiceMatch: boolean
+}
+
+export interface RankSpeakersResult {
+  candidates: RankedSpeakerCandidate[]
+}
+
+export interface SweepSpeakersArgs {
+  recordingId: string
+}
+
+export interface SweepSpeakersResult {
+  /** Number of segments that were auto-assigned during the sweep. */
+  updatedCount: number
 }
 
 // ─── Search IPC ──────────────────────────────────────────────────────────────
@@ -253,6 +278,10 @@ export interface UpdateSpeakerNotesArgs {
   notes: string | null
 }
 
+export interface ResetVoiceArgs {
+  speakerId: string
+}
+
 // ─── IPC channel name map ─────────────────────────────────────────────────────
 // This is the single source of truth for all channel strings.
 
@@ -266,14 +295,22 @@ export const IPC = {
     delete: 'recording:delete',
     export: 'recording:export',
     // Event pushed from main → renderer when auto-debrief is ready
-    debriefReady: 'recording:debriefReady'
+    debriefReady: 'recording:debriefReady',
+    // Event pushed from main → renderer when the full post-recording pipeline finishes
+    processed: 'recording:processed'
   },
   transcript: {
     get: 'transcript:get',
     updateSegment: 'transcript:updateSegment',
     assignSpeaker: 'transcript:assignSpeaker',
+    rankSpeakers: 'transcript:rankSpeakers',
+    sweepSpeakers: 'transcript:sweepSpeakers',
     // Event pushed from main → renderer during live recording
-    segmentAdded: 'transcript:segmentAdded'
+    segmentAdded: 'transcript:segmentAdded',
+    // Event pushed from main → renderer when post-recording diarization finishes
+    diarizationComplete: 'recording:diarizationComplete',
+    // Event pushed from main → renderer when background speaker sweep updates segments
+    speakersSwept: 'transcript:speakersSwept',
   },
   search: {
     query: 'search:query',
@@ -313,7 +350,8 @@ export const IPC = {
     rename: 'speaker:rename',
     delete: 'speaker:delete',
     merge: 'speaker:merge',
-    updateNotes: 'speaker:updateNotes'
+    updateNotes: 'speaker:updateNotes',
+    resetVoice: 'speaker:resetVoice'
   },
   voiceInput: {
     start: 'voiceInput:start',
@@ -327,7 +365,7 @@ export const IPC = {
 // ─── Keychain IPC ─────────────────────────────────────────────────────────────
 
 export interface GetApiKeyArgs {
-  provider: LLMProviderType
+  provider: string
 }
 
 export interface GetApiKeyResult {
@@ -335,12 +373,12 @@ export interface GetApiKeyResult {
 }
 
 export interface SetApiKeyArgs {
-  provider: LLMProviderType
+  provider: string
   apiKey: string
 }
 
 export interface DeleteApiKeyArgs {
-  provider: LLMProviderType
+  provider: string
 }
 
 // ─── Export IPC ──────────────────────────────────────────────────────────────
