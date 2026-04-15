@@ -15,6 +15,11 @@ export interface TranscriptionResult {
   segments: WhisperSegment[]
   language: string
   recordingId: string
+  /** Actual duration of the audio chunk in seconds (computed from PCM byte count).
+   *  Used by TranscriptionQueue to advance segmentOffset by the true chunk duration
+   *  rather than Whisper's last seg.end, which can be shorter than the chunk when
+   *  speech ends before the buffer boundary. */
+  chunkDurationSeconds: number
 }
 
 const CHUNK_DURATION_MS = 5000 // 5 second windows
@@ -64,6 +69,11 @@ export class WhisperService {
     if (this.buffer.length === 0) return
 
     const combined = Buffer.concat(this.buffer)
+    // Capture the true duration from the PCM byte count BEFORE resetting the buffer.
+    // Whisper's seg.end timestamps often end slightly before the chunk boundary (when
+    // speech ends before the tail of the buffer), so using them to advance segmentOffset
+    // causes cumulative drift. The byte-count duration is always accurate.
+    const chunkDurationSeconds = (combined.length / BYTES_PER_SAMPLE) / SAMPLE_RATE
     this.buffer = []
     this.bufferDurationMs = 0
 
@@ -78,7 +88,8 @@ export class WhisperService {
       onResult({
         segments: response.segments,
         language: response.language,
-        recordingId
+        recordingId,
+        chunkDurationSeconds
       })
     } finally {
       this.cleanupTmp(wavPath)

@@ -60,7 +60,6 @@ export class TranscriptionQueue extends EventEmitter {
     // Updating the offset INSIDE the loop would shift every subsequent segment
     // within the same chunk by an extra seg.end, corrupting timestamps.
     const chunkOffset = this.segmentOffset
-    let maxEnd = 0
 
     for (const seg of result.segments) {
       // Skip garbage hallucinations. faster-whisper expresses confidence as
@@ -80,14 +79,14 @@ export class TranscriptionQueue extends EventEmitter {
 
       const saved = this.transcriptRepo.create(input)
       this.emit('segment', saved)
-
-      if (seg.end > maxEnd) maxEnd = seg.end
     }
 
-    // Advance the offset by the furthest end time in this chunk
-    if (maxEnd > 0) {
-      this.segmentOffset = chunkOffset + maxEnd
-    }
+    // Always advance the offset by the TRUE PCM chunk duration, not Whisper's
+    // last seg.end. Whisper timestamps routinely end a few hundred ms before the
+    // chunk boundary (silence at the tail, hallucinated short segments, etc.).
+    // Using maxEnd causes cumulative drift that reaches 10+ seconds after
+    // ~20 chunks. The byte-count duration from WhisperService is always accurate.
+    this.segmentOffset = chunkOffset + result.chunkDurationSeconds
   }
 
   destroy(): void {
