@@ -294,6 +294,7 @@ export const IPC = {
     update: 'recording:update',
     delete: 'recording:delete',
     export: 'recording:export',
+    exportSummary: 'recording:exportSummary',
     // Event pushed from main → renderer when auto-debrief is ready
     debriefReady: 'recording:debriefReady',
     // Event pushed from main → renderer when the full post-recording pipeline finishes
@@ -391,6 +392,16 @@ export interface ExportTranscriptArgs {
 export interface ExportTranscriptResult {
   content: string
   filename: string
+}
+
+export interface ExportSummaryArgs {
+  recordingId: string
+  format: 'txt' | 'md' | 'docx' | 'pdf'
+}
+
+export interface ExportSummaryResult {
+  /** Absolute path the file was saved to, or null if the user cancelled. */
+  savedTo: string | null
 }
 
 // ─── Voice IPC ───────────────────────────────────────────────────────────────

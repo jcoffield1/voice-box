@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { SpeakerProfile } from '../../../../shared/types'
+import type { SpeakerProfile } from '@shared/types'
 import { Users, Pencil, Trash2, Merge, Check, X, Mic, FileText, AlertTriangle, RotateCcw } from 'lucide-react'
 
 function speakerColor(name: string): string {

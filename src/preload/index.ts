@@ -12,6 +12,8 @@ import type {
   DeleteRecordingArgs,
   ExportTranscriptArgs,
   ExportTranscriptResult,
+  ExportSummaryArgs,
+  ExportSummaryResult,
   GetTranscriptArgs,
   GetTranscriptResult,
   UpdateSegmentArgs,
@@ -97,6 +99,8 @@ const api = {
       invoke<void>(IPC.recording.delete, args),
     export: (args: ExportTranscriptArgs) =>
       invoke<ExportTranscriptResult>(IPC.recording.export, args),
+    exportSummary: (args: ExportSummaryArgs) =>
+      invoke<ExportSummaryResult>(IPC.recording.exportSummary, args),
     onDebriefReady: (cb: (payload: RecordingDebriefReadyPayload) => void) =>
       on(IPC.recording.debriefReady, cb as (...args: unknown[]) => void),
     onProcessed: (cb: (payload: { recordingId: string }) => void) =>

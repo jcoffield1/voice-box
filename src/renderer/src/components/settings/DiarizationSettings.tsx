@@ -44,15 +44,16 @@ export default function DiarizationSettings() {
 
         {hasExisting ? (
           <div className="flex items-center gap-2">
-            <div className="flex-1 input text-sm text-zinc-500 select-none">
-              Key stored in Keychain
-            </div>
+            <span className="text-xs text-emerald-400 flex items-center gap-1">
+              <Check className="w-3 h-3" /> Key stored in Keychain
+            </span>
             <button
-              className="btn-ghost p-2 text-red-400 hover:text-red-300"
+              type="button"
+              className="btn-ghost py-1 px-2 text-xs hover:text-red-400 ml-auto"
               onClick={handleDelete}
-              title="Remove token"
             >
-              <Trash2 className="w-4 h-4" />
+              <Trash2 className="w-3 h-3 mr-1" />
+              Remove
             </button>
           </div>
         ) : (

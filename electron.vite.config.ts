@@ -4,7 +4,7 @@ import { resolve } from 'path'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: ['marked'] })],
     resolve: {
       alias: {
         '@main': resolve('src/main'),

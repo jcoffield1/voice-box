@@ -58,7 +58,13 @@ export default function RecordingPage() {
 
   // Export
   const [exportOpen, setExportOpen] = useState(false)
+  const [exportSuccess, setExportSuccess] = useState<string | null>(null)
   const exportRef = useRef<HTMLDivElement>(null)
+
+  // Playback sync: currentTime from AudioPlayer drives transcript highlight;
+  // seekToSeconds is set when the user clicks a segment play button.
+  const [playbackSeconds, setPlaybackSeconds] = useState<number | undefined>(undefined)
+  const [seekToSeconds, setSeekToSeconds] = useState<number | undefined>(undefined)
 
   useEffect(() => {
     setNotesDraft(recording?.notes ?? '')
@@ -116,16 +122,26 @@ export default function RecordingPage() {
     if (!id) return
     setExportOpen(false)
     const result = await window.api.recording.export({ recordingId: id, format })
-    if (result.content) {
-      const blob = new Blob([result.content], { type: 'text/plain' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${recording?.title ?? id}.${format}`
-      a.click()
-      URL.revokeObjectURL(url)
+    const blob = new Blob([result.content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = result.filename
+    a.click()
+    URL.revokeObjectURL(url)
+    setExportSuccess(format.toUpperCase())
+    setTimeout(() => setExportSuccess(null), 3000)
+  }, [id])
+
+  const exportSummary = useCallback(async (format: 'txt' | 'md' | 'docx' | 'pdf') => {
+    if (!id) return
+    setExportOpen(false)
+    const result = await window.api.recording.exportSummary({ recordingId: id, format })
+    if (result.savedTo) {
+      setExportSuccess(format.toUpperCase())
+      setTimeout(() => setExportSuccess(null), 3000)
     }
-  }, [id, recording?.title])
+  }, [id])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -182,7 +198,13 @@ export default function RecordingPage() {
   // label modal state) is never unmounted on RecordingPage re-renders.
   const transcriptTabContent = (
     <div className="space-y-4">
-      <TranscriptView recordingId={id} isLive={isLive} jumpToSeconds={jumpToMs != null ? jumpToMs / 1000 : undefined} />
+      <TranscriptView
+        recordingId={id}
+        isLive={isLive}
+        jumpToSeconds={jumpToMs != null ? jumpToMs / 1000 : undefined}
+        playbackSeconds={playbackSeconds}
+        onSeek={(t) => setSeekToSeconds(t)}
+      />
 
       {/* Notes */}
       <div className="card space-y-2">
@@ -244,20 +266,63 @@ export default function RecordingPage() {
     <>
       {/* ── Maximized overlay ───────────────────────────────────────────── */}
       {maximized && (
-        <div className="fixed inset-0 z-50 bg-surface-950 flex flex-col p-6 overflow-y-auto">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-semibold text-zinc-100">
-              {activeTab === 'transcript' ? 'Transcript' : 'Summary'} — {recording?.title ?? 'Recording'}
+        <div className="fixed inset-0 z-50 bg-surface-900 flex flex-col p-6 gap-4 overflow-hidden">
+          {/* Header — app-region-no-drag so the Electron titlebar drag region
+               doesn't swallow clicks on the exit button */}
+          <div className="flex items-center justify-between shrink-0 app-region-no-drag">
+            <h2 className="text-base font-semibold text-zinc-100 truncate">
+              {recording?.title ?? 'Recording'}
             </h2>
             <button
-              className="btn-ghost p-1.5"
+              className="btn-ghost flex items-center gap-1.5 px-3 py-2 text-sm text-zinc-300 hover:text-white shrink-0"
               onClick={() => setMaximized(false)}
               title="Exit fullscreen (Esc)"
             >
               <Minimize2 className="w-4 h-4" />
+              <span>Exit fullscreen</span>
             </button>
           </div>
-          {activeTab === 'transcript' ? transcriptTabContent : summaryContent}
+
+          {/* Audio player (so playback sync works in fullscreen) */}
+          {!isLive && recording?.audioPath && (
+            <div className="shrink-0">
+              <AudioPlayer
+                src={`vbfile://localhost${encodeURI(recording.audioPath)}`}
+                onTimeUpdate={setPlaybackSeconds}
+                seekToSeconds={seekToSeconds}
+              />
+            </div>
+          )}
+
+          {/* Tab bar */}
+          <div className="flex items-center gap-1 border-b border-surface-700 shrink-0">
+            <button
+              className={`px-4 py-2 text-sm font-medium transition-colors -mb-px border-b-2 ${
+                activeTab === 'transcript'
+                  ? 'border-accent text-accent'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
+              onClick={() => setActiveTab('transcript')}
+            >
+              Transcript
+            </button>
+            <button
+              className={`px-4 py-2 text-sm font-medium transition-colors -mb-px border-b-2 flex items-center gap-1.5 ${
+                activeTab === 'summary'
+                  ? 'border-accent text-accent'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
+              onClick={() => setActiveTab('summary')}
+            >
+              Summary
+              {isGeneratingDebrief && <Loader2 className="w-3 h-3 animate-spin" />}
+            </button>
+          </div>
+
+          {/* Content — fills remaining height */}
+          <div className="flex-1 overflow-y-auto min-h-0">
+            {activeTab === 'transcript' ? transcriptTabContent : summaryContent}
+          </div>
         </div>
       )}
 
@@ -321,18 +386,48 @@ export default function RecordingPage() {
                   onClick={() => setExportOpen((v) => !v)}
                 >
                   <Download className="w-3.5 h-3.5" />
-                  Export
+                  {exportSuccess ? `Saved as ${exportSuccess}` : 'Export'}
                 </button>
                 {exportOpen && (
-                  <div className="absolute right-0 top-full mt-1 w-36 bg-surface-800 border border-surface-600 rounded-lg shadow-lg z-10 py-1">
-                    {(['txt', 'md', 'srt'] as const).map((fmt) => (
+                  <div className="absolute right-0 top-full mt-1 w-52 bg-surface-800 border border-surface-600 rounded-lg shadow-lg z-10 py-1">
+                    <div className="px-3 py-1.5 text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Transcript</div>
+                    {([
+                      { fmt: 'txt', label: 'Plain Text', desc: '.txt' },
+                      { fmt: 'md',  label: 'Markdown',   desc: '.md' },
+                      { fmt: 'srt', label: 'Subtitles',  desc: '.srt' },
+                    ] as const).map(({ fmt, label, desc }) => (
                       <button
                         key={fmt}
-                        className="w-full text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-surface-700 flex items-center gap-2"
+                        className="w-full text-left px-3 py-2 text-xs text-zinc-300 hover:bg-surface-700 flex items-center justify-between gap-2"
                         onClick={() => void exportTranscript(fmt)}
                       >
-                        <FileText className="w-3 h-3" />
-                        .{fmt.toUpperCase()}
+                        <span className="flex items-center gap-2"><FileText className="w-3 h-3 shrink-0" />{label}</span>
+                        <span className="text-zinc-500">{desc}</span>
+                      </button>
+                    ))}
+                    <div className="border-t border-surface-600 my-1" />
+                    <div className="px-3 py-1.5 text-[10px] text-zinc-500 uppercase tracking-wider font-medium flex items-center justify-between">
+                      Summary
+                      {!recording?.debrief && <span className="text-[9px] text-zinc-600 normal-case tracking-normal">not yet available</span>}
+                    </div>
+                    {([
+                      { fmt: 'pdf',  label: 'PDF Document',  desc: 'Print-ready' },
+                      { fmt: 'docx', label: 'Word Document', desc: '.docx' },
+                      { fmt: 'md',   label: 'Markdown',      desc: '.md' },
+                      { fmt: 'txt',  label: 'Plain Text',    desc: '.txt' },
+                    ] as const).map(({ fmt, label, desc }) => (
+                      <button
+                        key={fmt}
+                        className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between gap-2 ${
+                          recording?.debrief
+                            ? 'text-zinc-300 hover:bg-surface-700'
+                            : 'text-zinc-600 cursor-not-allowed'
+                        }`}
+                        onClick={() => recording?.debrief && void exportSummary(fmt)}
+                        disabled={!recording?.debrief}
+                      >
+                        <span className="flex items-center gap-2"><FileText className="w-3 h-3 shrink-0" />{label}</span>
+                        <span className={recording?.debrief ? 'text-zinc-500' : 'text-zinc-700'}>{desc}</span>
                       </button>
                     ))}
                   </div>
@@ -353,11 +448,13 @@ export default function RecordingPage() {
             </div>
           )}
 
-          {/* Audio player */}
-          {!isLive && recording?.audioPath && (
+          {/* Audio player — hidden when maximized to avoid two competing audio instances */}
+          {!isLive && recording?.audioPath && !maximized && (
             <AudioPlayer
               src={`vbfile://localhost${encodeURI(recording.audioPath)}`}
               jumpToSeconds={jumpToMs != null ? jumpToMs / 1000 : undefined}
+              onTimeUpdate={setPlaybackSeconds}
+              seekToSeconds={seekToSeconds}
             />
           )}
 

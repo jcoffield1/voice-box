@@ -19,7 +19,7 @@ function formatDuration(ms: number) {
 
 function statusColor(status: Recording['status']) {
   switch (status) {
-    case 'pending': return 'text-zinc-500'
+    case 'recording': return 'text-zinc-500'
     case 'processing': return 'text-amber-400'
     case 'complete': return 'text-green-400'
     case 'error': return 'text-red-400'

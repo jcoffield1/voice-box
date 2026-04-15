@@ -12,14 +12,21 @@ vi.mock('electron', () => ({
     on: vi.fn(),
     off: vi.fn()
   },
-  BrowserWindow: vi.fn(),
+  BrowserWindow: Object.assign(vi.fn(), {
+    fromWebContents: vi.fn(() => null),
+    getFocusedWindow: vi.fn(() => null),
+  }),
   // Required by recording.ipc.ts on macOS to request microphone permission
   systemPreferences: {
     askForMediaAccess: vi.fn(async () => true)
   },
   shell: {
-    openExternal: vi.fn()
-  }
+    openExternal: vi.fn(),
+    showItemInFolder: vi.fn(),
+  },
+  dialog: {
+    showSaveDialog: vi.fn(async () => ({ filePath: '/tmp/test-export-output' })),
+  },
 }))
 
 // Mock sqlite-vec so that Database.ts never calls db.loadExtension() with the native dylib.

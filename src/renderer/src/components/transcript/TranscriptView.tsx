@@ -13,9 +13,13 @@ interface Props {
   recordingId: string
   isLive: boolean
   jumpToSeconds?: number
+  /** Current playback position from AudioPlayer (seconds) */
+  playbackSeconds?: number
+  /** Called when user clicks a segment play button */
+  onSeek?: (seconds: number) => void
 }
 
-export default function TranscriptView({ recordingId, isLive, jumpToSeconds }: Props) {
+export default function TranscriptView({ recordingId, isLive, jumpToSeconds, playbackSeconds, onSeek }: Props) {
   const { segments, loading } = useTranscript(recordingId)
   const liveSegments = useRecordingStore((s) => s.liveSegments)
   const loadTranscript = useTranscriptStore((s) => s.loadTranscript)
@@ -56,6 +60,18 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds }: P
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [liveSegments, isLive])
+
+  // Auto-scroll to the active (currently playing) segment
+  useEffect(() => {
+    if (playbackSeconds == null || isLive) return
+    const active = displaySegments.find(
+      (seg) => playbackSeconds >= seg.timestampStart && playbackSeconds < seg.timestampEnd
+    )
+    if (active) {
+      const el = segmentRefs.current[active.id]
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [playbackSeconds, displaySegments, isLive])
 
   // Jump to a specific timestamp from search result
   useEffect(() => {
@@ -171,6 +187,8 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds }: P
             <TranscriptSegmentRow
               segment={seg}
               onLabelSpeaker={() => setAssignTarget(seg)}
+              playbackSeconds={!isLive ? playbackSeconds : undefined}
+              onSeek={!isLive ? onSeek : undefined}
             />
           </div>
         ))}

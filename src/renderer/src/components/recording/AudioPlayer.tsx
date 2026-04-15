@@ -6,6 +6,10 @@ interface Props {
   src: string
   /** Optional: jump to this time in seconds on mount / when it changes */
   jumpToSeconds?: number
+  /** Called with current playback position (seconds) on every timeupdate */
+  onTimeUpdate?: (seconds: number) => void
+  /** Imperative seek: when this value changes the player seeks to it */
+  seekToSeconds?: number
 }
 
 function formatTime(seconds: number) {
@@ -17,19 +21,37 @@ function formatTime(seconds: number) {
   return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
-export default function AudioPlayer({ src, jumpToSeconds }: Props) {
+export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSeconds }: Props) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(1)
+  // Tracks whether this specific instance has mounted — prevents auto-play when
+  // the player is freshly mounted while seekToSeconds is already non-null (e.g.
+  // when entering fullscreen after a segment play-button was clicked).
+  const seekMountedRef = useRef(false)
 
-  // Jump to timestamp when prop changes
+  // Jump to timestamp when prop changes (from search result)
   useEffect(() => {
     if (jumpToSeconds != null && audioRef.current) {
       audioRef.current.currentTime = jumpToSeconds
     }
   }, [jumpToSeconds])
+
+  // Seek when parent requests it (from transcript play button).
+  // Skip the very first run so mounting with a stale seekToSeconds doesn't
+  // unexpectedly start playback.
+  useEffect(() => {
+    if (!seekMountedRef.current) {
+      seekMountedRef.current = true
+      return
+    }
+    if (seekToSeconds != null && audioRef.current) {
+      audioRef.current.currentTime = seekToSeconds
+      void audioRef.current.play()
+    }
+  }, [seekToSeconds])
 
   const handlePlayPause = useCallback(() => {
     const audio = audioRef.current
@@ -61,7 +83,11 @@ export default function AudioPlayer({ src, jumpToSeconds }: Props) {
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
-        onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime ?? 0)}
+        onTimeUpdate={() => {
+          const t = audioRef.current?.currentTime ?? 0
+          setCurrentTime(t)
+          onTimeUpdate?.(t)
+        }}
         onLoadedMetadata={() => setDuration(audioRef.current?.duration ?? 0)}
         preload="metadata"
       />

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Mic, Square, Monitor, X, UserPlus, User } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Mic, Square, Monitor, X, UserPlus, User, Loader2 } from 'lucide-react'
 import { useRecordingStore } from '../../store/recordingStore'
 import { useSettingsStore } from '../../store/settingsStore'
 import { useTranscriptStore } from '../../store/transcriptStore'
@@ -32,9 +33,12 @@ export default function LiveRecordingModal({ onClose }: Props) {
   const [title, setTitle] = useState('')
   const [systemAudio, setSystemAudio] = useState(false)
   const [starting, setStarting] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [assignTarget, setAssignTarget] = useState<TranscriptSegment | null>(null)
+
+  const navigate = useNavigate()
 
   const {
     isRecording, audioLevel, activeRecordingId,
@@ -46,13 +50,15 @@ export default function LiveRecordingModal({ onClose }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const prevIsRecordingRef = useRef(isRecording)
 
-  // Close when recording stops externally (error / crash)
+  // Close (and navigate to recording page) when recording stops externally (error / crash)
+  const postProcessingRecordingId = useRecordingStore((s) => s.postProcessingRecordingId)
   useEffect(() => {
     if (prevIsRecordingRef.current && !isRecording) {
+      if (postProcessingRecordingId) navigate(`/recordings/${postProcessingRecordingId}`)
       onClose()
     }
     prevIsRecordingRef.current = isRecording
-  }, [isRecording, onClose])
+  }, [isRecording, onClose, navigate, postProcessingRecordingId])
 
   // Elapsed timer
   useEffect(() => {
@@ -85,7 +91,14 @@ export default function LiveRecordingModal({ onClose }: Props) {
   }
 
   const handleStop = async () => {
-    await stopRecording()
+    const id = activeRecordingId // capture before stopRecording clears it
+    setStopping(true)
+    try {
+      await stopRecording()
+    } finally {
+      setStopping(false)
+    }
+    if (id) navigate(`/recordings/${id}`)
     onClose()
   }
 
@@ -152,9 +165,12 @@ export default function LiveRecordingModal({ onClose }: Props) {
               <button
                 className="btn-danger py-1.5 px-3 text-xs flex items-center gap-1.5"
                 onClick={handleStop}
+                disabled={stopping}
               >
-                <Square className="w-3.5 h-3.5" />
-                Stop
+                {stopping
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <Square className="w-3.5 h-3.5" />}
+                {stopping ? 'Stopping…' : 'Stop'}
               </button>
             )}
             {!isRecording && (

@@ -1,5 +1,10 @@
-import { ipcMain, app, systemPreferences, shell } from 'electron'
+import { ipcMain, app, systemPreferences, shell, dialog, BrowserWindow } from 'electron'
 import { join } from 'path'
+import { promises as fs } from 'fs'
+import { marked } from 'marked'
+import {
+  Document, Paragraph, TextRun, HeadingLevel, Packer, BorderStyle
+} from 'docx'
 import { IPC } from '@shared/ipc-types'
 import type {
   StartRecordingArgs,
@@ -12,7 +17,9 @@ import type {
   UpdateRecordingArgs,
   DeleteRecordingArgs,
   ExportTranscriptArgs,
-  ExportTranscriptResult
+  ExportTranscriptResult,
+  ExportSummaryArgs,
+  ExportSummaryResult
 } from '@shared/ipc-types'
 import type { RecordingRepository } from '../services/storage/repositories/RecordingRepository'
 import type { TranscriptRepository } from '../services/storage/repositories/TranscriptRepository'
@@ -115,7 +122,7 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     recordingRepo.delete(args.recordingId)
   })
 
-  // ─── Export Transcript ───────────────────────────────────────────────────
+  // ─── Export Transcript (txt / md / srt) ───────────────────────────────────
 
   ipcMain.handle(IPC.recording.export, async (_event, args: ExportTranscriptArgs): Promise<ExportTranscriptResult> => {
     const recording = recordingRepo.findById(args.recordingId)
@@ -125,9 +132,8 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     const date = new Date(recording.createdAt).toLocaleDateString('en-US', {
       year: 'numeric', month: 'long', day: 'numeric'
     })
-
+    const safeTitle = recording.title.replace(/[^a-zA-Z0-9\-_ ]/g, '').trim() || 'recording'
     let content: string
-    const safeTitle = recording.title.replace(/[^a-zA-Z0-9\-_ ]/g, '').trim()
 
     if (args.format === 'srt') {
       content = segments.map((seg, i) => {
@@ -137,16 +143,15 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
         return `${i + 1}\n${start} --> ${end}\n${speaker}${seg.text}\n`
       }).join('\n')
     } else if (args.format === 'md') {
-      const header = `# ${recording.title}\n\n**Date:** ${date}\n**Duration:** ${recording.duration ? formatTime(recording.duration) : 'unknown'}\n\n---\n\n`
-      const summary = recording.summary ? `## Summary\n\n${recording.summary}\n\n---\n\n## Transcript\n\n` : `## Transcript\n\n`
+      const header = `# ${recording.title}\n\n**Date:** ${date}\n**Duration:** ${recording.duration ? formatTime(recording.duration) : 'unknown'}\n\n---\n\n## Transcript\n\n`
       const body = segments.map((seg) => {
         const ts = formatTime(seg.timestampStart)
         const speaker = seg.speakerName ?? 'Unknown'
         return `**[${ts}] ${speaker}:** ${seg.text}`
       }).join('\n\n')
-      content = header + summary + body
+      content = header + body
     } else {
-      // plain text
+      // txt
       const header = `${recording.title}\n${'='.repeat(recording.title.length)}\nDate: ${date}\n\n`
       const body = segments.map((seg) => {
         const ts = formatTime(seg.timestampStart)
@@ -156,10 +161,187 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
       content = header + body
     }
 
-    return {
-      content,
-      filename: `${safeTitle}.${args.format}`
+    return { content, filename: `${safeTitle}.${args.format}` }
+  })
+
+  // ─── Export Summary (pdf / docx / md / txt) ─────────────────────────────
+
+  ipcMain.handle(IPC.recording.exportSummary, async (_event, args: ExportSummaryArgs): Promise<ExportSummaryResult> => {
+    const recording = recordingRepo.findById(args.recordingId)
+    if (!recording) throw new Error(`Recording not found: ${args.recordingId}`)
+
+    const summary = recording.debrief ?? recording.summary ?? ''
+    const date = new Date(recording.createdAt).toLocaleDateString('en-US', {
+      year: 'numeric', month: 'long', day: 'numeric'
+    })
+    const duration = recording.duration ? formatTime(recording.duration) : 'unknown'
+    const safeTitle = recording.title.replace(/[^a-zA-Z0-9\-_ ]/g, '').trim() || 'recording'
+
+    const filterMap: Record<string, Electron.FileFilter[]> = {
+      txt:  [{ name: 'Plain Text', extensions: ['txt'] }],
+      md:   [{ name: 'Markdown', extensions: ['md'] }],
+      docx: [{ name: 'Word Document', extensions: ['docx'] }],
+      pdf:  [{ name: 'PDF Document', extensions: ['pdf'] }],
     }
+
+    const win = BrowserWindow.fromWebContents(_event.sender)
+    const { filePath } = await dialog.showSaveDialog(win ?? BrowserWindow.getFocusedWindow()!, {
+      title: 'Export Summary',
+      defaultPath: join(app.getPath('documents'), `${safeTitle}-summary.${args.format}`),
+      filters: filterMap[args.format],
+    })
+
+    if (!filePath) return { savedTo: null }
+
+    if (args.format === 'txt') {
+      const divider = '─'.repeat(60)
+      let out = `${recording.title}\n${'='.repeat(recording.title.length)}\n`
+      out += `Date:      ${date}\nDuration:  ${duration}\n`
+      out += `${divider}\n\nSUMMARY\n${divider}\n\n${summary}\n`
+      await fs.writeFile(filePath, out, 'utf8')
+
+    } else if (args.format === 'md') {
+      let out = `# ${recording.title}\n\n`
+      out += `> **Date:** ${date} &nbsp;·&nbsp; **Duration:** ${duration}\n\n`
+      out += `---\n\n## Summary\n\n${summary}\n`
+      await fs.writeFile(filePath, out, 'utf8')
+
+    } else if (args.format === 'docx') {
+      // Parse inline markdown (**bold**, *italic*, `code`) into TextRuns
+      const inlineRuns = (text: string): TextRun[] => {
+        const runs: TextRun[] = []
+        const re = /\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|([^*`]+)/gs
+        let m: RegExpExecArray | null
+        while ((m = re.exec(text)) !== null) {
+          if (m[1]) runs.push(new TextRun({ text: m[1], bold: true, size: 22 }))
+          else if (m[2]) runs.push(new TextRun({ text: m[2], italics: true, size: 22 }))
+          else if (m[3]) runs.push(new TextRun({ text: m[3], font: 'Courier New', size: 20 }))
+          else if (m[4]) runs.push(new TextRun({ text: m[4], size: 22 }))
+        }
+        return runs.length > 0 ? runs : [new TextRun({ text, size: 22 })]
+      }
+
+      // Parse markdown blocks into Paragraph objects
+      const mdToDocxParagraphs = (text: string): Paragraph[] => {
+        const paras: Paragraph[] = []
+        for (const line of text.split('\n')) {
+          const t = line.trimEnd()
+          const h1 = t.match(/^# (.+)$/)
+          const h2 = t.match(/^## (.+)$/)
+          const h3 = t.match(/^### (.+)$/)
+          const ul = t.match(/^[*\-] (.+)$/)
+          const ol = t.match(/^\d+\. (.+)$/)
+          const hr = t.match(/^---+$/)
+          if (h1) {
+            paras.push(new Paragraph({ text: h1[1].replace(/\*\*/g, ''), heading: HeadingLevel.HEADING_2, spacing: { before: 360, after: 120 } }))
+          } else if (h2) {
+            paras.push(new Paragraph({ text: h2[1].replace(/\*\*/g, ''), heading: HeadingLevel.HEADING_3, spacing: { before: 240, after: 80 } }))
+          } else if (h3) {
+            paras.push(new Paragraph({ children: [new TextRun({ text: h3[1].replace(/\*\*/g, ''), bold: true, size: 22 })], spacing: { before: 160, after: 60 } }))
+          } else if (ul) {
+            paras.push(new Paragraph({ children: inlineRuns(ul[1]), bullet: { level: 0 }, spacing: { after: 40 } }))
+          } else if (ol) {
+            paras.push(new Paragraph({ children: inlineRuns(ol[1]), bullet: { level: 0 }, spacing: { after: 40 } }))
+          } else if (hr) {
+            paras.push(new Paragraph({ text: '', border: { bottom: { style: BorderStyle.SINGLE, size: 2, color: 'DDDDDD' } }, spacing: { before: 80, after: 80 } }))
+          } else if (t.trim()) {
+            paras.push(new Paragraph({ children: inlineRuns(t), spacing: { after: 100 } }))
+          } else {
+            paras.push(new Paragraph({ text: '', spacing: { after: 60 } }))
+          }
+        }
+        return paras
+      }
+
+      const docChildren: Paragraph[] = []
+
+      docChildren.push(new Paragraph({
+        text: recording.title,
+        heading: HeadingLevel.HEADING_1,
+        spacing: { after: 120 },
+      }))
+      docChildren.push(new Paragraph({
+        children: [
+          new TextRun({ text: `Date: ${date}`, color: '666666', size: 20 }),
+          new TextRun({ text: '   ·   ', color: 'AAAAAA', size: 20 }),
+          new TextRun({ text: `Duration: ${duration}`, color: '666666', size: 20 }),
+        ],
+        spacing: { after: 240 },
+      }))
+      docChildren.push(new Paragraph({
+        text: 'Summary',
+        heading: HeadingLevel.HEADING_2,
+        spacing: { before: 240, after: 120 },
+        border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'DDDDDD' } },
+      }))
+      docChildren.push(...mdToDocxParagraphs(summary))
+
+      const doc = new Document({
+        creator: 'VoiceBox',
+        title: recording.title,
+        description: `Summary exported from VoiceBox on ${date}`,
+        styles: {
+          paragraphStyles: [
+            { id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', run: { size: 40, bold: true, color: '1a1a2e' }, paragraph: { spacing: { after: 120 } } },
+            { id: 'Heading2', name: 'Heading 2', basedOn: 'Normal', run: { size: 28, bold: true, color: '2c3e50' }, paragraph: { spacing: { before: 360, after: 120 } } },
+          ],
+        },
+        sections: [{ children: docChildren }],
+      })
+      await fs.writeFile(filePath, await Packer.toBuffer(doc))
+
+    } else if (args.format === 'pdf') {
+      const escHtml = (s: string) =>
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+      // Convert markdown to HTML so bold, headings, bullets etc. render correctly
+      marked.setOptions({ async: false })
+      const summaryHtml = marked.parse(summary) as string
+
+      const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>
+  @page { margin: 20mm 22mm; }
+  body { font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; color: #1a1a2e; line-height: 1.7; margin: 0; }
+  h1.doc-title { font-size: 20pt; margin: 0 0 4px; font-family: 'Helvetica Neue', Arial, sans-serif; }
+  .meta { color: #777; font-size: 9pt; margin-bottom: 20px; font-family: Arial, sans-serif; }
+  hr.divider { border: none; border-top: 1px solid #ccc; margin: 18px 0; }
+  .summary-body h1 { font-size: 14pt; color: #1a1a2e; margin: 18px 0 8px; font-family: 'Helvetica Neue', Arial, sans-serif; }
+  .summary-body h2 { font-size: 13pt; color: #2c3e50; margin: 16px 0 7px; border-bottom: 1px solid #e0e0e0; padding-bottom: 4px; font-family: 'Helvetica Neue', Arial, sans-serif; }
+  .summary-body h3 { font-size: 11.5pt; color: #2c3e50; margin: 14px 0 5px; font-family: 'Helvetica Neue', Arial, sans-serif; }
+  .summary-body p { margin: 0 0 9px; }
+  .summary-body ul, .summary-body ol { margin: 0 0 9px; padding-left: 22px; }
+  .summary-body li { margin-bottom: 4px; }
+  .summary-body strong { font-weight: 700; color: #111; }
+  .summary-body em { font-style: italic; }
+  .summary-body blockquote { border-left: 3px solid #ccc; margin: 0 0 9px 0; padding: 4px 12px; color: #555; }
+  .summary-body code { font-family: 'Courier New', monospace; background: #f4f4f4; padding: 1px 4px; border-radius: 2px; font-size: 10pt; }
+  .footer { text-align: center; font-size: 8pt; color: #aaa; margin-top: 32px; font-family: Arial, sans-serif; }
+</style></head><body>
+<h1 class="doc-title">${escHtml(recording.title)}</h1>
+<div class="meta">${escHtml(date)} &nbsp;·&nbsp; ${escHtml(duration)}</div>
+<hr class="divider">
+<div class="summary-body">${summaryHtml}</div>
+<div class="footer">Exported from VoiceBox</div>
+</body></html>`
+
+      const pdfWin = new BrowserWindow({
+        show: false,
+        width: 900,
+        height: 1200,
+        webPreferences: { contextIsolation: true, nodeIntegration: false },
+      })
+      await pdfWin.loadURL(`data:text/html;base64,${Buffer.from(html).toString('base64')}`)
+      const pdfBuffer = await pdfWin.webContents.printToPDF({
+        printBackground: true,
+        pageSize: 'Letter',
+        margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 },
+      })
+      pdfWin.destroy()
+      await fs.writeFile(filePath, pdfBuffer)
+    }
+
+    shell.showItemInFolder(filePath)
+    return { savedTo: filePath }
   })
 }
 

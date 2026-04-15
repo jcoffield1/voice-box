@@ -25,6 +25,7 @@ function makeRecording(overrides?: Partial<Recording>): Recording {
     id: 'rec-1',
     title: 'Test Recording',
     createdAt: FIXED_CREATED_AT,
+    updatedAt: FIXED_CREATED_AT,
     status: 'complete',
     duration: 5,
     audioPath: null,
@@ -71,7 +72,7 @@ function makeDeps() {
     create: vi.fn(() => recording),
     findById: vi.fn(() => recording),
     findAll: vi.fn(() => [recording]),
-    update: vi.fn((id: string, patch: Partial<Recording>) => ({ ...recording, ...patch })),
+    update: vi.fn((_id: string, patch: Partial<Recording>) => ({ ...recording, ...patch })),
     delete: vi.fn()
   }
   const transcriptRepo = {
@@ -130,7 +131,7 @@ describe('registerRecordingIpc', () => {
   })
 
   it('get returns null for unknown id', async () => {
-    vi.mocked(deps.recordingRepo.findById).mockReturnValueOnce(null)
+    vi.mocked(deps.recordingRepo.findById).mockImplementationOnce(() => null as unknown as Recording)
     const result = await handlers[IPC.recording.get](evt, { recordingId: 'bad' })
     expect(result).toEqual({ recording: null })
   })
@@ -174,7 +175,7 @@ describe('registerRecordingIpc', () => {
   })
 
   it('start throws and marks recording as error if audio fails to open', async () => {
-    vi.mocked(deps.audio.getState).mockReturnValueOnce('error')
+    vi.mocked(deps.audio.getState).mockImplementationOnce(() => 'error' as unknown as ReturnType<typeof deps.audio.getState>)
     await expect(
       handlers[IPC.recording.start](evt, {
         title: 'Fail',
@@ -202,52 +203,89 @@ describe('registerRecordingIpc', () => {
     expect((result as { recordingId: string }).recordingId).toBe('rec-1')
   })
 
-  // ── recording:export ─────────────────────────────────────────────────────
+  // ── recording:export (transcript) ───────────────────────────────────────
 
   it('export throws when recording does not exist', async () => {
-    vi.mocked(deps.recordingRepo.findById).mockReturnValueOnce(null)
+    vi.mocked(deps.recordingRepo.findById).mockImplementationOnce(() => null as unknown as Recording)
     await expect(
       handlers[IPC.recording.export](evt, { recordingId: 'bad', format: 'txt' })
     ).rejects.toThrow('Recording not found')
   })
 
-  it('export txt contains title header and formatted timestamps', async () => {
+  it('export txt returns content with title, timestamp and speaker', async () => {
     const result = await handlers[IPC.recording.export](evt, { recordingId: 'rec-1', format: 'txt' })
     const { content, filename } = result as { content: string; filename: string }
-    expect(filename).toMatch(/\.txt$/)
+    expect(filename).toBe('Test Recording.txt')
     expect(content).toContain('Test Recording')
-    // Segment at 62.5s → [01:02]
     expect(content).toContain('[01:02]')
     expect(content).toContain('Alice')
     expect(content).toContain('Hello world')
   })
 
-  it('export md contains markdown headers and bold timestamps', async () => {
+  it('export md returns markdown with header and bold timestamp', async () => {
     const result = await handlers[IPC.recording.export](evt, { recordingId: 'rec-1', format: 'md' })
     const { content, filename } = result as { content: string; filename: string }
-    expect(filename).toMatch(/\.md$/)
+    expect(filename).toBe('Test Recording.md')
     expect(content).toContain('# Test Recording')
     expect(content).toContain('**[01:02] Alice:**')
+    expect(content).toContain('Hello world')
   })
 
-  it('export srt produces numbered cue blocks with SRT timestamps', async () => {
+  it('export srt returns numbered cue with hh:mm:ss,mmm timestamps', async () => {
     const result = await handlers[IPC.recording.export](evt, { recordingId: 'rec-1', format: 'srt' })
     const { content, filename } = result as { content: string; filename: string }
-    expect(filename).toMatch(/\.srt$/)
-    // Should start with cue number 1
-    expect(content.trimStart()).toMatch(/^1\n/)
-    // SRT timestamp format hh:mm:ss,mmm --> hh:mm:ss,mmm
-    expect(content).toMatch(/\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}/)
+    expect(filename).toBe('Test Recording.srt')
+    expect(content).toContain('1\n')
+    // 62.5s start → 00:01:02,500   65.0s end → 00:01:05,000
+    expect(content).toContain('00:01:02,500 --> 00:01:05,000')
     expect(content).toContain('Alice:')
+    expect(content).toContain('Hello world')
   })
 
-  it('export md includes summary section when recording has a summary', async () => {
+  // ── recording:exportSummary ───────────────────────────────────────────────
+
+  it('exportSummary throws when recording does not exist', async () => {
+    vi.mocked(deps.recordingRepo.findById).mockImplementationOnce(() => null as unknown as Recording)
+    await expect(
+      handlers[IPC.recording.exportSummary](evt, { recordingId: 'bad', format: 'txt' })
+    ).rejects.toThrow('Recording not found')
+  })
+
+  it('exportSummary returns null savedTo when user cancels', async () => {
+    const { dialog } = await import('electron')
+    vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ filePath: undefined as unknown as string, canceled: true })
+    const result = await handlers[IPC.recording.exportSummary](evt, { recordingId: 'rec-1', format: 'txt' })
+    expect((result as { savedTo: string | null }).savedTo).toBeNull()
+  })
+
+  it('exportSummary txt writes summary content to file', async () => {
     vi.mocked(deps.recordingRepo.findById).mockReturnValueOnce(
-      makeRecording({ summary: 'Key points here' })
+      makeRecording({ debrief: 'Key points here' })
     )
-    const result = await handlers[IPC.recording.export](evt, { recordingId: 'rec-1', format: 'md' })
-    const { content } = result as { content: string }
-    expect(content).toContain('## Summary')
-    expect(content).toContain('Key points here')
+    const { promises: fsPromises } = await import('fs')
+    const writeSpy = vi.spyOn(fsPromises, 'writeFile').mockResolvedValue()
+    const result = await handlers[IPC.recording.exportSummary](evt, { recordingId: 'rec-1', format: 'txt' })
+    expect((result as { savedTo: string }).savedTo).toBe('/tmp/test-export-output')
+    expect(writeSpy).toHaveBeenCalledOnce()
+    const written = writeSpy.mock.calls[0][1] as string
+    expect(written).toContain('Test Recording')
+    expect(written).toContain('Key points here')
+    writeSpy.mockRestore()
+  })
+
+  it('exportSummary md writes markdown with summary heading', async () => {
+    vi.mocked(deps.recordingRepo.findById).mockReturnValueOnce(
+      makeRecording({ debrief: 'Key points here' })
+    )
+    const { promises: fsPromises } = await import('fs')
+    const writeSpy = vi.spyOn(fsPromises, 'writeFile').mockResolvedValue()
+    await handlers[IPC.recording.exportSummary](evt, { recordingId: 'rec-1', format: 'md' })
+    const written = writeSpy.mock.calls[0][1] as string
+    expect(written).toContain('# Test Recording')
+    expect(written).toContain('## Summary')
+    expect(written).toContain('Key points here')
+    // Must NOT contain Transcript section
+    expect(written).not.toContain('## Transcript')
+    writeSpy.mockRestore()
   })
 })

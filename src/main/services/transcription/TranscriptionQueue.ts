@@ -1,10 +1,8 @@
 import { EventEmitter } from 'events'
-import { randomUUID } from 'crypto'
 import type { WhisperService, TranscriptionResult } from './WhisperService'
 import type { AudioCaptureService, AudioChunk } from '../audio/AudioCaptureService'
 import type { TranscriptRepository, CreateSegmentInput } from '../storage/repositories/TranscriptRepository'
 import type { RecordingRepository } from '../storage/repositories/RecordingRepository'
-import type { TranscriptSegment } from '@shared/types'
 
 /**
  * TranscriptionQueue — orchestrates audio capture → Whisper → DB persistence.
@@ -22,7 +20,7 @@ export class TranscriptionQueue extends EventEmitter {
     private readonly whisper: WhisperService,
     private readonly audio: AudioCaptureService,
     private readonly transcriptRepo: TranscriptRepository,
-    private readonly recordingRepo: RecordingRepository
+    _recordingRepo: RecordingRepository
   ) {
     super()
     this.audio.on('chunk', this.onAudioChunk)
