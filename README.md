@@ -88,7 +88,7 @@ This starts `electron-vite` in watch mode — the renderer hot-reloads on file c
 
 The app launches with a local SQLite database at:
 ```
-~/Library/Application Support/call-transcriber/recordings.db
+~/Library/Application Support/call-transcriber/callTranscriber.db
 ```
 
 ---
@@ -149,7 +149,7 @@ voice-box/
 │   │       │   ├── SpeakersPage.tsx
 │   │       │   └── SettingsPage.tsx
 │   │       ├── components/     # Shared UI components
-│   │       └── stores/         # Zustand state stores
+│   │       └── store/          # Zustand state stores
 │   ├── preload/                # Electron contextBridge (typed IPC exposure)
 │   └── shared/
 │       ├── types.ts            # Shared TypeScript types
