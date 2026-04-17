@@ -26,6 +26,7 @@ vi.mock('electron', () => ({
   },
   dialog: {
     showSaveDialog: vi.fn(async () => ({ filePath: '/tmp/test-export-output' })),
+    showOpenDialog: vi.fn(async () => ({ canceled: false, filePaths: ['/tmp/sample.wav'] })),
   },
 }))
 

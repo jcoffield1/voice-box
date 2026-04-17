@@ -59,6 +59,15 @@ export interface DeleteRecordingArgs {
   recordingId: string
 }
 
+export interface ImportAudioArgs {
+  /** If provided, skip the file dialog and import this path directly. */
+  filePath?: string
+}
+
+export interface ImportAudioResult {
+  recordingId: string
+}
+
 export interface RecordingDebriefReadyPayload {
   recordingId: string
   debrief: string
@@ -298,7 +307,9 @@ export const IPC = {
     // Event pushed from main → renderer when auto-debrief is ready
     debriefReady: 'recording:debriefReady',
     // Event pushed from main → renderer when the full post-recording pipeline finishes
-    processed: 'recording:processed'
+    processed: 'recording:processed',
+    // Import an audio file and process it like a recording
+    import: 'recording:import'
   },
   transcript: {
     get: 'transcript:get',

@@ -10,6 +10,8 @@ import type {
   GetRecordingResult,
   UpdateRecordingArgs,
   DeleteRecordingArgs,
+  ImportAudioArgs,
+  ImportAudioResult,
   ExportTranscriptArgs,
   ExportTranscriptResult,
   ExportSummaryArgs,
@@ -97,6 +99,8 @@ const api = {
       invoke<GetRecordingResult>(IPC.recording.update, args),
     delete: (args: DeleteRecordingArgs) =>
       invoke<void>(IPC.recording.delete, args),
+    import: (args?: ImportAudioArgs) =>
+      invoke<ImportAudioResult>(IPC.recording.import, args ?? {}),
     export: (args: ExportTranscriptArgs) =>
       invoke<ExportTranscriptResult>(IPC.recording.export, args),
     exportSummary: (args: ExportSummaryArgs) =>

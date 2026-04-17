@@ -1,6 +1,6 @@
 import { ipcMain, app, systemPreferences, shell, dialog, BrowserWindow } from 'electron'
-import { join } from 'path'
-import { promises as fs } from 'fs'
+import { join, basename, extname } from 'path'
+import { promises as fs, copyFileSync } from 'fs'
 import { marked } from 'marked'
 import {
   Document, Paragraph, TextRun, HeadingLevel, Packer, BorderStyle
@@ -16,6 +16,8 @@ import type {
   GetRecordingResult,
   UpdateRecordingArgs,
   DeleteRecordingArgs,
+  ImportAudioArgs,
+  ImportAudioResult,
   ExportTranscriptArgs,
   ExportTranscriptResult,
   ExportSummaryArgs,
@@ -25,6 +27,7 @@ import type { RecordingRepository } from '../services/storage/repositories/Recor
 import type { TranscriptRepository } from '../services/storage/repositories/TranscriptRepository'
 import type { AudioCaptureService } from '../services/audio/AudioCaptureService'
 import type { TranscriptionQueue } from '../services/transcription/TranscriptionQueue'
+import type { WhisperService } from '../services/transcription/WhisperService'
 import type { WebContents } from 'electron'
 
 interface RecordingIpcDeps {
@@ -32,7 +35,9 @@ interface RecordingIpcDeps {
   transcriptRepo: TranscriptRepository
   audio: AudioCaptureService
   queue: TranscriptionQueue
+  whisper: WhisperService
   getWebContents: () => WebContents | null
+  triggerPostRecordingPipeline: (recordingId: string) => void
 }
 
 function formatTime(seconds: number): string {
@@ -42,7 +47,7 @@ function formatTime(seconds: number): string {
 }
 
 export function registerRecordingIpc(deps: RecordingIpcDeps): void {
-  const { recordingRepo, transcriptRepo, audio, queue, getWebContents } = deps
+  const { recordingRepo, transcriptRepo, audio, queue, whisper, getWebContents, triggerPostRecordingPipeline } = deps
 
   // Register once — not inside the start handler, to avoid accumulating listeners
   queue.on('segment', (segment) => {
@@ -120,6 +125,82 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
 
   ipcMain.handle(IPC.recording.delete, async (_event, args: DeleteRecordingArgs): Promise<void> => {
     recordingRepo.delete(args.recordingId)
+  })
+
+  // ─── Import Audio File ────────────────────────────────────────────────────
+
+  ipcMain.handle(IPC.recording.import, async (_event, args: ImportAudioArgs): Promise<ImportAudioResult> => {
+    const SUPPORTED_EXTENSIONS = ['wav', 'mp3', 'm4a', 'ogg', 'flac', 'aac', 'webm', 'mp4']
+
+    let sourcePath: string | undefined = args?.filePath
+
+    if (!sourcePath) {
+      const win = BrowserWindow.fromWebContents(_event.sender) ?? BrowserWindow.getFocusedWindow()
+      const result = await dialog.showOpenDialog(win!, {
+        title: 'Import Audio File',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Audio Files', extensions: SUPPORTED_EXTENSIONS },
+          { name: 'All Files', extensions: ['*'] }
+        ]
+      })
+      if (result.canceled || result.filePaths.length === 0) {
+        throw new Error('Import cancelled')
+      }
+      sourcePath = result.filePaths[0]
+    }
+
+    // Derive a title from the filename (strip extension)
+    const ext = extname(sourcePath).toLowerCase().slice(1)
+    const nameWithExt = basename(sourcePath)
+    const title = nameWithExt.replace(/\.[^.]+$/, '')
+
+    // Copy audio into the recordings folder so we have a stable internal path
+    const recordingsDir = join(app.getPath('userData'), 'recordings')
+    await fs.mkdir(recordingsDir, { recursive: true })
+
+    const recording = recordingRepo.create(title)
+    const destPath = join(recordingsDir, `${recording.id}.${ext}`)
+    copyFileSync(sourcePath, destPath)
+
+    // Mark as processing immediately and persist the audio path
+    recordingRepo.update(recording.id, { status: 'processing', audioPath: destPath })
+
+    // Run transcription + pipeline asynchronously; return the recordingId right
+    // away so the renderer can navigate to the new recording page immediately.
+    void (async () => {
+      try {
+        console.log(`[Import] Starting transcription for "${title}" (${destPath})`)
+        const segments = await whisper.transcribeFile(destPath)
+
+        for (const seg of segments) {
+          if (!seg.text.trim()) continue
+          if (seg.confidence < -0.7) continue
+          transcriptRepo.create({
+            recordingId: recording.id,
+            text: seg.text,
+            timestampStart: seg.start,
+            timestampEnd: seg.end,
+            whisperConfidence: seg.confidence
+          })
+        }
+
+        const lastSeg = segments[segments.length - 1]
+        const duration = lastSeg ? Math.round(lastSeg.end) : null
+        recordingRepo.update(recording.id, { status: 'complete', duration })
+
+        console.log(`[Import] Transcription done — ${segments.length} segments. Triggering post-recording pipeline.`)
+
+        // Reuse the exact same diarization + debrief pipeline as live recordings
+        triggerPostRecordingPipeline(recording.id)
+      } catch (err) {
+        console.error('[Import] Pipeline failed:', (err as Error).message)
+        recordingRepo.update(recording.id, { status: 'error' })
+        getWebContents()?.send(IPC.recording.processed, { recordingId: recording.id })
+      }
+    })()
+
+    return { recordingId: recording.id }
   })
 
   // ─── Export Transcript (txt / md / srt) ───────────────────────────────────

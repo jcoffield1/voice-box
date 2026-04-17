@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import LiveRecordingModal from '../components/recording/LiveRecordingModal'
 import RecordingList from '../components/recording/RecordingList'
 import { useRecording } from '../hooks/useRecording'
-import { Mic, Clock, FileText, AlertTriangle, CheckCircle } from 'lucide-react'
+import { Mic, Clock, FileText, AlertTriangle, CheckCircle, Upload } from 'lucide-react'
 import type { SystemStatusResult } from '@shared/ipc-types'
 
 function formatTotalDuration(ms: number): string {
@@ -25,8 +26,10 @@ function formatRelative(ts: number): string {
 }
 
 export default function Dashboard() {
-  const { recordings, loadingRecordings, deleteRecording } = useRecording()
+  const navigate = useNavigate()
+  const { recordings, loadingRecordings, deleteRecording, loadRecordings } = useRecording()
   const [showControls, setShowControls] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [systemStatus, setSystemStatus] = useState<SystemStatusResult | null>(null)
 
   useEffect(() => {
@@ -34,6 +37,23 @@ export default function Dashboard() {
       .then((s) => setSystemStatus(s))
       .catch(() => {})
   }, [])
+
+  const handleImport = useCallback(async () => {
+    setImporting(true)
+    try {
+      const result = await window.api.recording.import()
+      await loadRecordings()
+      navigate(`/recordings/${result.recordingId}`)
+    } catch (err) {
+      // User cancelled or an actual error — only log real errors
+      const msg = (err as Error).message ?? ''
+      if (!msg.includes('cancelled') && !msg.includes('Import cancelled')) {
+        console.error('[Import] Failed:', msg)
+      }
+    } finally {
+      setImporting(false)
+    }
+  }, [navigate, loadRecordings])
 
   // Stats
   const totalDuration = recordings.reduce((sum, r) => sum + (r.duration ?? 0), 0)
@@ -109,12 +129,22 @@ export default function Dashboard() {
 
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-zinc-100">Recordings</h1>
-        <button
-          className="btn-primary"
-          onClick={() => setShowControls(true)}
-        >
-          New Recording
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="btn-ghost flex items-center gap-1.5"
+            onClick={handleImport}
+            disabled={importing}
+          >
+            <Upload className="w-3.5 h-3.5" />
+            {importing ? 'Importing…' : 'Import Audio'}
+          </button>
+          <button
+            className="btn-primary"
+            onClick={() => setShowControls(true)}
+          >
+            New Recording
+          </button>
+        </div>
       </div>
 
       {showControls && (

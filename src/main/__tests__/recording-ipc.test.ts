@@ -12,6 +12,20 @@ import { registerRecordingIpc } from '@main/ipc/recording.ipc'
 import type { Recording } from '@shared/types'
 import type { IpcMainInvokeEvent } from 'electron'
 
+// Prevent the import handler from touching real disk
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>()
+  return {
+    ...actual,
+    copyFileSync: vi.fn(),
+    promises: {
+      ...actual.promises,
+      mkdir: vi.fn(async () => undefined),
+      writeFile: actual.promises.writeFile
+    }
+  }
+})
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 const evt = {} as IpcMainInvokeEvent
@@ -76,7 +90,8 @@ function makeDeps() {
     delete: vi.fn()
   }
   const transcriptRepo = {
-    findByRecordingId: vi.fn(() => [makeSegment()])
+    findByRecordingId: vi.fn(() => [makeSegment()]),
+    create: vi.fn()
   }
   const audio = {
     start: vi.fn(),
@@ -89,15 +104,24 @@ function makeDeps() {
     start: vi.fn(),
     stop: vi.fn(async () => {})
   }
+  const whisper = {
+    transcribeFile: vi.fn(async (): Promise<import('@shared/types').WhisperSegment[]> => [
+      { text: 'Hello', start: 0.0, end: 2.0, confidence: -0.3 },
+      { text: 'World', start: 2.0, end: 4.0, confidence: -0.2 }
+    ])
+  }
+  const triggerPostRecordingPipeline = vi.fn()
   const getWebContents = vi.fn(() => null)
 
-  return { recordingRepo, transcriptRepo, audio, queue, getWebContents } as unknown as Parameters<
+  return { recordingRepo, transcriptRepo, audio, queue, whisper, triggerPostRecordingPipeline, getWebContents } as unknown as Parameters<
     typeof registerRecordingIpc
   >[0] & {
     recordingRepo: typeof recordingRepo
     transcriptRepo: typeof transcriptRepo
     audio: typeof audio
     queue: typeof queue
+    whisper: typeof whisper
+    triggerPostRecordingPipeline: typeof triggerPostRecordingPipeline
   }
 }
 
@@ -287,5 +311,109 @@ describe('registerRecordingIpc', () => {
     // Must NOT contain Transcript section
     expect(written).not.toContain('## Transcript')
     writeSpy.mockRestore()
+  })
+
+  // ── recording:import ─────────────────────────────────────────────────────
+
+  it('import opens file dialog and returns recordingId', async () => {
+    const { dialog } = await import('electron')
+    const result = await handlers[IPC.recording.import](evt, {})
+    expect(vi.mocked(dialog.showOpenDialog)).toHaveBeenCalledOnce()
+    expect((result as { recordingId: string }).recordingId).toBe('rec-1')
+  })
+
+  it('import creates a recording using the filename as the title', async () => {
+    const { dialog } = await import('electron')
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({
+      canceled: false,
+      filePaths: ['/audio/my-meeting.mp3']
+    })
+    await handlers[IPC.recording.import](evt, {})
+    expect(deps.recordingRepo.create).toHaveBeenCalledWith('my-meeting')
+  })
+
+  it('import accepts a filePath arg and skips the dialog', async () => {
+    const { dialog } = await import('electron')
+    vi.mocked(dialog.showOpenDialog).mockClear()
+    await handlers[IPC.recording.import](evt, { filePath: '/audio/direct.wav' })
+    expect(vi.mocked(dialog.showOpenDialog)).not.toHaveBeenCalled()
+    expect(deps.recordingRepo.create).toHaveBeenCalledWith('direct')
+  })
+
+  it('import marks recording as processing immediately', async () => {
+    await handlers[IPC.recording.import](evt, {})
+    expect(deps.recordingRepo.update).toHaveBeenCalledWith(
+      'rec-1',
+      expect.objectContaining({ status: 'processing' })
+    )
+  })
+
+  it('import throws when user cancels the dialog', async () => {
+    const { dialog } = await import('electron')
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    await expect(handlers[IPC.recording.import](evt, {})).rejects.toThrow('Import cancelled')
+  })
+
+  it('import calls transcribeFile with the destination audio path', async () => {
+    await handlers[IPC.recording.import](evt, {})
+    // Drain the async background IIFE (3 microtask ticks: IIFE start → transcribeFile call → resolve)
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    expect(deps.whisper.transcribeFile).toHaveBeenCalledWith(
+      expect.stringContaining('rec-1')
+    )
+  })
+
+  it('import saves whisper segments to transcript repo', async () => {
+    // Expose create on transcriptRepo for this test
+    const createSpy = vi.fn()
+    ;(deps.transcriptRepo as Record<string, unknown>).create = createSpy
+
+    await handlers[IPC.recording.import](evt, {})
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+
+    expect(createSpy).toHaveBeenCalledTimes(2)
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ recordingId: 'rec-1', text: 'Hello' })
+    )
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ recordingId: 'rec-1', text: 'World' })
+    )
+  })
+
+  it('import skips whisper segments with low confidence', async () => {
+    vi.mocked(deps.whisper.transcribeFile).mockResolvedValueOnce([
+      { text: 'Good', start: 0, end: 1, confidence: -0.3 },
+      { text: 'Noise', start: 1, end: 2, confidence: -0.9 }, // below threshold
+      { text: '', start: 2, end: 3, confidence: -0.2 }        // blank
+    ])
+    const createSpy = vi.fn()
+    ;(deps.transcriptRepo as Record<string, unknown>).create = createSpy
+
+    await handlers[IPC.recording.import](evt, {})
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({ text: 'Good' }))
+  })
+
+  it('import calls triggerPostRecordingPipeline after transcription', async () => {
+    await handlers[IPC.recording.import](evt, {})
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    expect(deps.triggerPostRecordingPipeline).toHaveBeenCalledWith('rec-1')
+  })
+
+  it('import marks recording as error and sends processed event when transcription fails', async () => {
+    const webContents = { send: vi.fn() }
+    vi.mocked(deps.getWebContents).mockReturnValueOnce(webContents as unknown as ReturnType<typeof deps.getWebContents>)
+    vi.mocked(deps.whisper.transcribeFile).mockRejectedValueOnce(new Error('Whisper failed'))
+
+    await handlers[IPC.recording.import](evt, {})
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+
+    expect(deps.recordingRepo.update).toHaveBeenCalledWith('rec-1', { status: 'error' })
+    expect(webContents.send).toHaveBeenCalledWith(
+      IPC.recording.processed,
+      { recordingId: 'rec-1' }
+    )
   })
 })

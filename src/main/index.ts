@@ -485,12 +485,7 @@ function initServices(): void {
   })
 
   // After recording completes: run diarization then auto-generate debrief
-  queue.on('complete', async (recordingId: string) => {
-    // Clear any segments that were pending live-ID when the recording stopped.
-    // They'll be fully covered by the post-recording null-segment sweep.
-    pendingLiveSegments = []
-    liveIdRunning = false
-
+  async function runPostRecordingPipeline(recordingId: string): Promise<void> {
     const recording = recordingRepo.findById(recordingId)
     if (!recording) {
       mainWindow?.webContents.send(IPC.recording.processed, { recordingId })
@@ -659,6 +654,15 @@ Be thorough — this is the complete record of the conversation.`
     // the renderer clears the "Analyzing recording…" banner regardless of
     // whether diarization/debrief succeeded or there were no segments.
     mainWindow?.webContents.send(IPC.recording.processed, { recordingId })
+  }
+
+  queue.on('complete', async (recordingId: string) => {
+    // Clear any segments that were pending live-ID when the recording stopped.
+    // They'll be fully covered by the post-recording null-segment sweep.
+    pendingLiveSegments = []
+    liveIdRunning = false
+
+    await runPostRecordingPipeline(recordingId)
   })
 
   // Search
@@ -667,7 +671,15 @@ Be thorough — this is the complete record of the conversation.`
   // Register all IPC handlers
   const getWebContents = () => mainWindow?.webContents ?? null
 
-  registerRecordingIpc({ recordingRepo, transcriptRepo, audio, queue, getWebContents })
+  registerRecordingIpc({
+    recordingRepo,
+    transcriptRepo,
+    audio,
+    queue,
+    whisper,
+    getWebContents,
+    triggerPostRecordingPipeline: (recordingId) => void runPostRecordingPipeline(recordingId)
+  })
   registerTranscriptIpc({ transcriptRepo, speakerRepo, recordingRepo, speakerIdService, getWebContents, audio })
   registerSearchIpc({ search: searchService, embeddingService })
   registerAiIpc({ llm: llmService, conversationRepo, recordingRepo, transcriptRepo, speakerRepo, searchService, getWebContents })
