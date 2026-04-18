@@ -2,16 +2,18 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useChatThread } from '../../hooks/useAI'
 import { useAIStore } from '../../store/aiStore'
 import ChatMessageBubble from './ChatMessageBubble'
-import { Send, Loader2, Sparkles, Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
+import { Send, Loader2, Sparkles, Mic, MicOff, Volume2, VolumeX, Maximize2 } from 'lucide-react'
 import { useSettingsStore } from '../../store/settingsStore'
 
 interface Props {
   recordingId: string
   /** Pre-populate the input field (e.g. from a search result "Ask AI" click) */
   initialMessage?: string
+  /** Called when the user clicks the maximize button in the panel header */
+  onMaximize?: () => void
 }
 
-export default function AIPanel({ recordingId, initialMessage }: Props) {
+export default function AIPanel({ recordingId, initialMessage, onMaximize }: Props) {
   const [threadId, setThreadId] = useState<string | null>(null)
   const { messages, streaming, loading, createThread, sendMessage } = useChatThread(threadId)
   const storeLoadThread = useAIStore((s) => s.loadThread)
@@ -163,6 +165,15 @@ export default function AIPanel({ recordingId, initialMessage }: Props) {
             <Sparkles className="w-3.5 h-3.5" />
             Summarize
           </button>
+          {onMaximize && (
+            <button
+              className="btn-ghost p-1.5"
+              onClick={onMaximize}
+              title="Fullscreen AI chat"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 

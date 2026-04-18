@@ -40,9 +40,9 @@ export default function RecordingPage() {
   const recording = recordings.find((r) => r.id === id)
   const isLive = useRecordingStore((s) => s.isRecording && s.activeRecordingId === id)
 
-  // Tab + maximize
+  // Tab + maximize ('content' = transcript/notes overlay, 'ai' = AI chat overlay)
   const [activeTab, setActiveTab] = useState<Tab>('transcript')
-  const [maximized, setMaximized] = useState(false)
+  const [maximized, setMaximized] = useState<'content' | 'ai' | false>(false)
 
   // Title editing
   const [editingTitle, setEditingTitle] = useState(false)
@@ -307,8 +307,8 @@ export default function RecordingPage() {
 
   return (
     <>
-      {/* ── Maximized overlay ───────────────────────────────────────────── */}
-      {maximized && (
+      {/* ── Maximized overlay — transcript/summary/notes ────────────────── */}
+      {maximized === 'content' && (
         <div className="fixed inset-0 z-50 bg-surface-900 flex flex-col p-6 gap-4 overflow-hidden">
           {/* Header — app-region-no-drag so the Electron titlebar drag region
                doesn't swallow clicks on the exit button */}
@@ -375,6 +375,28 @@ export default function RecordingPage() {
           {/* Content — fills remaining height */}
           <div className="flex-1 overflow-y-auto min-h-0">
             {activeTab === 'transcript' ? transcriptTabContent : activeTab === 'summary' ? summaryContent : notesTabContent}
+          </div>
+        </div>
+      )}
+
+      {/* ── Maximized overlay — AI chat ───────────────────────────────────── */}
+      {maximized === 'ai' && (
+        <div className="fixed inset-0 z-50 bg-surface-900 flex flex-col p-6 gap-0 overflow-hidden">
+          <div className="flex items-center justify-between shrink-0 app-region-no-drag pb-4">
+            <h2 className="text-base font-semibold text-zinc-100 truncate">
+              {recording?.title ?? 'Recording'} — AI Chat
+            </h2>
+            <button
+              className="btn-ghost flex items-center gap-1.5 px-3 py-2 text-sm text-zinc-300 hover:text-white shrink-0"
+              onClick={() => setMaximized(false)}
+              title="Exit fullscreen (Esc)"
+            >
+              <Minimize2 className="w-4 h-4" />
+              <span>Exit fullscreen</span>
+            </button>
+          </div>
+          <div className="flex-1 min-h-0">
+            <AIPanel recordingId={id} initialMessage={askParam} />
           </div>
         </div>
       )}
@@ -501,8 +523,8 @@ export default function RecordingPage() {
             </div>
           )}
 
-          {/* Audio player — hidden when maximized to avoid two competing audio instances */}
-          {!isLive && recording?.audioPath && !maximized && (
+          {/* Audio player — hidden when content overlay is open (overlay has its own player) */}
+          {!isLive && recording?.audioPath && maximized !== 'content' && (
             <AudioPlayer
               src={`vbfile://localhost${encodeURI(recording.audioPath)}`}
               jumpToSeconds={jumpToMs != null ? jumpToMs / 1000 : undefined}
@@ -547,7 +569,7 @@ export default function RecordingPage() {
             <div className="ml-auto mb-1">
               <button
                 className="btn-ghost p-1.5"
-                onClick={() => setMaximized(true)}
+                onClick={() => setMaximized('content')}
                 title="Fullscreen"
               >
                 <Maximize2 className="w-3.5 h-3.5" />
@@ -563,7 +585,7 @@ export default function RecordingPage() {
 
         {/* Right: AI panel */}
         <div className="w-80 flex-shrink-0">
-          <AIPanel recordingId={id} initialMessage={askParam} />
+          <AIPanel recordingId={id} initialMessage={askParam} onMaximize={() => setMaximized('ai')} />
         </div>
       </div>
     </>
