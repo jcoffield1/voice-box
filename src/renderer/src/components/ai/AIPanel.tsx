@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useChatThread } from '../../hooks/useAI'
+import { useAIStore } from '../../store/aiStore'
 import ChatMessageBubble from './ChatMessageBubble'
 import { Send, Loader2, Sparkles, Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
 import { useSettingsStore } from '../../store/settingsStore'
@@ -13,6 +14,7 @@ interface Props {
 export default function AIPanel({ recordingId, initialMessage }: Props) {
   const [threadId, setThreadId] = useState<string | null>(null)
   const { messages, streaming, loading, createThread, sendMessage } = useChatThread(threadId)
+  const storeLoadThread = useAIStore((s) => s.loadThread)
   const [input, setInput] = useState(initialMessage ?? '')
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [voiceActive, setVoiceActive] = useState(false)
@@ -27,17 +29,24 @@ export default function AIPanel({ recordingId, initialMessage }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const justLoadedRef = useRef(false)
 
-  // On mount (or recordingId change), restore the most recent thread for this recording
+  // On mount (or recordingId change), restore the most recent thread for this recording.
+  // We await storeLoadThread BEFORE setThreadId so messages are already in the Zustand store
+  // when the component re-renders — avoiding a blank-then-populated flash.
   useEffect(() => {
+    let cancelled = false
     setThreadId(null)
     void (async () => {
       const { threads } = await window.api.ai.getThreadsByRecording({ recordingId })
+      if (cancelled) return
       if (threads.length > 0) {
+        await storeLoadThread(threads[0].id)
+        if (cancelled) return
         justLoadedRef.current = true
         setThreadId(threads[0].id)
       }
     })()
-  }, [recordingId])
+    return () => { cancelled = true }
+  }, [recordingId, storeLoadThread])
 
   // Scroll to bottom when messages load initially or new ones arrive
   useEffect(() => {

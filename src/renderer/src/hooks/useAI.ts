@@ -9,6 +9,9 @@ export function useChatThread(threadId: string | null) {
 
   useEffect(() => {
     if (!threadId) return
+    // Skip the fetch if messages are already loaded into the store (e.g. pre-loaded
+    // by AIPanel before setting threadId to avoid an empty-flash on navigation).
+    if (store.messages[threadId] !== undefined) return
     void store.loadThread(threadId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId])
