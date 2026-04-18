@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Search, SlidersHorizontal, X } from 'lucide-react'
 import { useSearch } from '../hooks/useSearch'
 import SearchResultCard from '../components/search/SearchResultCard'
-import type { SpeakerProfile } from '@shared/types'
+import type { SpeakerProfile, SummaryTemplate } from '@shared/types'
 
 const HISTORY_KEY = 'vb:searchHistory'
 const MAX_HISTORY = 10
@@ -24,7 +24,10 @@ export default function SearchPage() {
   const [input, setInput] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>([])
+  const [templates, setTemplates] = useState<SummaryTemplate[]>([])
   const [speakerFilter, setSpeakerFilter] = useState('')
+  // '__default__' = filter by recordings with no template assigned (using default)
+  const [templateFilter, setTemplateFilter] = useState<string>('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [history, setHistory] = useState<string[]>(loadHistory)
@@ -33,6 +36,7 @@ export default function SearchPage() {
 
   useEffect(() => {
     window.api.speaker.getAll().then(({ speakers: all }) => setSpeakers(all)).catch(() => {})
+    window.api.template.getAll().then(({ templates: all }) => setTemplates(all)).catch(() => {})
   }, [])
 
   const handleSubmit = useCallback(
@@ -45,20 +49,22 @@ export default function SearchPage() {
       setHistory(loadHistory())
       void submit(q, {
         speakerName: speakerFilter || undefined,
+        ...(templateFilter === '' ? {} : { templateId: templateFilter }),
         dateFrom: dateFrom ? new Date(dateFrom).getTime() : undefined,
         dateTo: dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : undefined
       })
     },
-    [input, speakerFilter, dateFrom, dateTo, submit]
+    [input, speakerFilter, templateFilter, dateFrom, dateTo, submit]
   )
 
   const clearFilters = () => {
     setSpeakerFilter('')
+    setTemplateFilter('')
     setDateFrom('')
     setDateTo('')
   }
 
-  const hasFilters = speakerFilter || dateFrom || dateTo
+  const hasFilters = speakerFilter || templateFilter || dateFrom || dateTo
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -143,7 +149,7 @@ export default function SearchPage() {
                 </button>
               )}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-zinc-500 mb-1">Speaker</label>
                 <select
@@ -154,6 +160,19 @@ export default function SearchPage() {
                   <option value="">All speakers</option>
                   {speakers.map((s) => (
                     <option key={s.id} value={s.name}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">Template</label>
+                <select
+                  className="input text-sm w-full"
+                  value={templateFilter}
+                  onChange={(e) => setTemplateFilter(e.target.value)}
+                >
+                  <option value="">All templates</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
                   ))}
                 </select>
               </div>

@@ -17,6 +17,7 @@ interface RecordingRow {
   debrief_at: number | null
   notes: string | null
   tags: string
+  template_id: string | null
 }
 
 function rowToRecording(row: RecordingRow): Recording {
@@ -34,7 +35,8 @@ function rowToRecording(row: RecordingRow): Recording {
     debrief: row.debrief,
     debriefAt: row.debrief_at,
     notes: row.notes,
-    tags: JSON.parse(row.tags) as string[]
+    tags: JSON.parse(row.tags) as string[],
+    templateId: row.template_id
   }
 }
 
@@ -69,7 +71,7 @@ export class RecordingRepository {
 
   update(
     id: string,
-    fields: Partial<Pick<Recording, 'title' | 'notes' | 'tags' | 'status' | 'duration' | 'audioPath' | 'summary' | 'summaryModel' | 'summaryAt' | 'debrief' | 'debriefAt'>>
+    fields: Partial<Pick<Recording, 'title' | 'notes' | 'tags' | 'status' | 'duration' | 'audioPath' | 'summary' | 'summaryModel' | 'summaryAt' | 'debrief' | 'debriefAt' | 'templateId'>>
   ): Recording | null {
     const updates: string[] = []
     const values: unknown[] = []
@@ -85,6 +87,7 @@ export class RecordingRepository {
     if (fields.summaryAt !== undefined) { updates.push('summary_at = ?'); values.push(fields.summaryAt) }
     if (fields.debrief !== undefined) { updates.push('debrief = ?'); values.push(fields.debrief) }
     if (fields.debriefAt !== undefined) { updates.push('debrief_at = ?'); values.push(fields.debriefAt) }
+    if ('templateId' in fields) { updates.push('template_id = ?'); values.push(fields.templateId ?? null) }
 
     if (updates.length === 0) return this.findById(id)
 

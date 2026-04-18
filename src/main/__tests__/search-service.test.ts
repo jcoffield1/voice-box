@@ -84,4 +84,77 @@ describe('SearchService', () => {
     const results = await svc.query({ query: 'revenue', limit: 3 })
     expect(results.length).toBeLessThanOrEqual(3)
   })
+
+  it('filters results by templateId — only returns segments from recordings with that template', async () => {
+    const db = getDatabase()
+    const now = Date.now()
+    // Two recordings — one with template A, one with template B
+    db.prepare(
+      `INSERT INTO recordings (id, title, created_at, updated_at, status, tags, template_id)
+       VALUES (?, ?, ?, ?, 'complete', '[]', ?)`
+    ).run('rec-tpl-a', 'Template A Recording', now, now, 'tpl-a')
+    db.prepare(
+      `INSERT INTO recordings (id, title, created_at, updated_at, status, tags, template_id)
+       VALUES (?, ?, ?, ?, 'complete', '[]', ?)`
+    ).run('rec-tpl-b', 'Template B Recording', now, now, 'tpl-b')
+
+    db.prepare(
+      `INSERT INTO transcript_segments (id, recording_id, text, timestamp_start, timestamp_end, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run('seg-tpl-a', 'rec-tpl-a', 'strategy discussion template a', 0, 3, now)
+    db.prepare(
+      `INSERT INTO transcript_segments (id, recording_id, text, timestamp_start, timestamp_end, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run('seg-tpl-b', 'rec-tpl-b', 'strategy discussion template b', 0, 3, now)
+
+    const results = await svc.query({ query: 'strategy', templateId: 'tpl-a' })
+    expect(results.length).toBeGreaterThanOrEqual(1)
+    expect(results.every((r) => r.templateId === 'tpl-a')).toBe(true)
+    expect(results.some((r) => r.recordingId === 'rec-tpl-b')).toBe(false)
+  })
+
+  it('filters by templateId: null — only returns segments from recordings using the default template', async () => {
+    const db = getDatabase()
+    const now = Date.now()
+    db.prepare(
+      `INSERT INTO recordings (id, title, created_at, updated_at, status, tags, template_id)
+       VALUES (?, ?, ?, ?, 'complete', '[]', ?)`
+    ).run('rec-default', 'Default Template Recording', now, now, null)
+    db.prepare(
+      `INSERT INTO recordings (id, title, created_at, updated_at, status, tags, template_id)
+       VALUES (?, ?, ?, ?, 'complete', '[]', ?)`
+    ).run('rec-custom', 'Custom Template Recording', now, now, 'tpl-custom')
+
+    db.prepare(
+      `INSERT INTO transcript_segments (id, recording_id, text, timestamp_start, timestamp_end, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run('seg-default', 'rec-default', 'default debrief planning', 0, 3, now)
+    db.prepare(
+      `INSERT INTO transcript_segments (id, recording_id, text, timestamp_start, timestamp_end, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run('seg-custom', 'rec-custom', 'default debrief planning', 0, 3, now)
+
+    const results = await svc.query({ query: 'debrief', templateId: null })
+    expect(results.length).toBeGreaterThanOrEqual(1)
+    expect(results.every((r) => r.templateId === null)).toBe(true)
+    expect(results.some((r) => r.recordingId === 'rec-custom')).toBe(false)
+  })
+
+  it('returns templateId on each result matching the recording', async () => {
+    const db = getDatabase()
+    const now = Date.now()
+    db.prepare(
+      `INSERT INTO recordings (id, title, created_at, updated_at, status, tags, template_id)
+       VALUES (?, ?, ?, ?, 'complete', '[]', ?)`
+    ).run('rec-tplid', 'TplId Check', now, now, 'tpl-xyz')
+    db.prepare(
+      `INSERT INTO transcript_segments (id, recording_id, text, timestamp_start, timestamp_end, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run('seg-tplid', 'rec-tplid', 'template id propagation check', 0, 2, now)
+
+    const results = await svc.query({ query: 'propagation' })
+    const hit = results.find((r) => r.recordingId === 'rec-tplid')
+    expect(hit).toBeDefined()
+    expect(hit!.templateId).toBe('tpl-xyz')
+  })
 })

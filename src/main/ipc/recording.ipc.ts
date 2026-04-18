@@ -118,7 +118,8 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     const recording = recordingRepo.update(args.recordingId, {
       title: args.title,
       notes: args.notes,
-      tags: args.tags
+      tags: args.tags,
+      ...('templateId' in args ? { templateId: args.templateId } : {})
     })
     return { recording }
   })
@@ -130,7 +131,16 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
   // ─── Import Audio File ────────────────────────────────────────────────────
 
   ipcMain.handle(IPC.recording.import, async (_event, args: ImportAudioArgs): Promise<ImportAudioResult> => {
-    const SUPPORTED_EXTENSIONS = ['wav', 'mp3', 'm4a', 'ogg', 'flac', 'aac', 'webm', 'mp4']
+    const SUPPORTED_EXTENSIONS = [
+      // Lossless / PCM
+      'wav', 'flac', 'aiff', 'aif',
+      // Compressed (all decoded by ffmpeg inside faster-whisper)
+      'mp3', 'm4a', 'aac', 'ogg', 'opus', 'wma',
+      // Container formats that carry audio
+      'mp4', 'mov', 'mkv', 'webm',
+      // Apple-specific (Voice Memos on-device format)
+      'caf'
+    ]
 
     let sourcePath: string | undefined = args?.filePath
 
@@ -171,7 +181,7 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     void (async () => {
       try {
         console.log(`[Import] Starting transcription for "${title}" (${destPath})`)
-        const segments = await whisper.transcribeFile(destPath)
+        const segments = await whisper.transcribeAudioFile(destPath)
 
         for (const seg of segments) {
           if (!seg.text.trim()) continue

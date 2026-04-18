@@ -79,10 +79,12 @@ function makeDeps() {
       text: '## Summary\n\n- Key point one\n- Key point two',
       model: 'gpt-4o-mini',
       provider: 'openai'
-    }))
+    })),
+    stream: vi.fn(async function* () { yield 'Mock response chunk.' })
   }
   const conversationRepo = {
     findThreadById: vi.fn(() => ({ id: 'thread-1', title: null, createdAt: Date.now(), updatedAt: Date.now() })),
+    findMessagesByThread: vi.fn(() => []),
     addMessage: vi.fn((threadId: string, role: string, content: string) => ({
       id: 'msg-1',
       threadId,
@@ -203,5 +205,103 @@ describe('registerAiIpc — ai:summarize', () => {
     await handlers[IPC.ai.summarize](evt, { recordingId: 'rec-1' })
     const [, req] = vi.mocked(deps.llm.complete).mock.calls[0]
     expect(req.messages[0].content).toContain('Unknown: Anonymous text')
+  })
+})
+
+// ─── buildRagContext / chat templateId scoping ────────────────────────────────
+
+describe('registerAiIpc — ai:chat template scoping', () => {
+  let handlers: Record<string, (...args: unknown[]) => unknown>
+  let deps: ReturnType<typeof makeDeps>
+
+  beforeEach(() => {
+    vi.mocked(ipcMain.handle).mockReset()
+    handlers = captureHandlers()
+    deps = makeDeps()
+    registerAiIpc(deps)
+  })
+
+  it('passes templateId to searchService.query when provided', async () => {
+    // searchService.query returns empty → falls back to general-knowledge reply via LLM
+    vi.mocked(deps.searchService.query).mockResolvedValueOnce([])
+
+    await handlers[IPC.ai.chat](evt, {
+      threadId: 'thread-1',
+      message: 'What did we discuss?',
+      recordingId: null,
+      model: 'gpt-4o',
+      provider: 'openai',
+      templateId: 'tpl-sales'
+    })
+
+    expect(deps.searchService.query).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: 'tpl-sales' })
+    )
+  })
+
+  it('passes templateId: null to searchService.query for default-template scope', async () => {
+    vi.mocked(deps.searchService.query).mockResolvedValueOnce([])
+
+    await handlers[IPC.ai.chat](evt, {
+      threadId: 'thread-1',
+      message: 'Summary please',
+      recordingId: null,
+      model: 'gpt-4o',
+      provider: 'openai',
+      templateId: null
+    })
+
+    expect(deps.searchService.query).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: null })
+    )
+  })
+
+  it('injects templateName into the system prompt when search returns results', async () => {
+    vi.mocked(deps.searchService.query).mockResolvedValueOnce([
+      {
+        segmentId: 'seg-1',
+        recordingId: 'rec-1',
+        recordingTitle: 'Q1 Sales Call',
+        text: 'Pipeline looks strong this quarter.',
+        speakerName: 'Alice',
+        timestampStart: 10,
+        timestampEnd: 14,
+        templateId: 'tpl-sales',
+        score: 0.9,
+        matchType: 'keyword',
+        snippet: 'Pipeline looks strong this quarter.'
+      }
+    ])
+
+    await handlers[IPC.ai.chat](evt, {
+      threadId: 'thread-1',
+      message: 'How is the pipeline?',
+      recordingId: null,
+      model: 'gpt-4o',
+      provider: 'openai',
+      templateId: 'tpl-sales',
+      templateName: 'Sales Calls'
+    })
+
+    const [, req] = vi.mocked(deps.llm.stream).mock.calls[0]
+    expect(req.systemPrompt).toContain('Sales Calls')
+    // Should NOT draw on general knowledge
+    expect(req.systemPrompt).toMatch(/ONLY|only/)
+  })
+
+  it('does not pass templateId to searchService.query when no scoping is requested', async () => {
+    vi.mocked(deps.searchService.query).mockResolvedValueOnce([])
+
+    await handlers[IPC.ai.chat](evt, {
+      threadId: 'thread-1',
+      message: 'Tell me about the meetings',
+      recordingId: null,
+      model: 'gpt-4o',
+      provider: 'openai'
+      // no templateId
+    })
+
+    const callArg = vi.mocked(deps.searchService.query).mock.calls[0]?.[0]
+    expect(callArg).not.toHaveProperty('templateId')
   })
 })

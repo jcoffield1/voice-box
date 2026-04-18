@@ -105,7 +105,7 @@ function makeDeps() {
     stop: vi.fn(async () => {})
   }
   const whisper = {
-    transcribeFile: vi.fn(async (): Promise<import('@shared/types').WhisperSegment[]> => [
+    transcribeAudioFile: vi.fn(async (): Promise<import('@shared/types').WhisperSegment[]> => [
       { text: 'Hello', start: 0.0, end: 2.0, confidence: -0.3 },
       { text: 'World', start: 2.0, end: 4.0, confidence: -0.2 }
     ])
@@ -354,11 +354,11 @@ describe('registerRecordingIpc', () => {
     await expect(handlers[IPC.recording.import](evt, {})).rejects.toThrow('Import cancelled')
   })
 
-  it('import calls transcribeFile with the destination audio path', async () => {
+  it('import calls transcribeAudioFile with the destination audio path', async () => {
     await handlers[IPC.recording.import](evt, {})
-    // Drain the async background IIFE (3 microtask ticks: IIFE start → transcribeFile call → resolve)
+    // Drain the async background IIFE (3 microtask ticks: IIFE start → transcribeAudioFile call → resolve)
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
-    expect(deps.whisper.transcribeFile).toHaveBeenCalledWith(
+    expect(deps.whisper.transcribeAudioFile).toHaveBeenCalledWith(
       expect.stringContaining('rec-1')
     )
   })
@@ -381,7 +381,7 @@ describe('registerRecordingIpc', () => {
   })
 
   it('import skips whisper segments with low confidence', async () => {
-    vi.mocked(deps.whisper.transcribeFile).mockResolvedValueOnce([
+    vi.mocked(deps.whisper.transcribeAudioFile).mockResolvedValueOnce([
       { text: 'Good', start: 0, end: 1, confidence: -0.3 },
       { text: 'Noise', start: 1, end: 2, confidence: -0.9 }, // below threshold
       { text: '', start: 2, end: 3, confidence: -0.2 }        // blank
@@ -405,7 +405,7 @@ describe('registerRecordingIpc', () => {
   it('import marks recording as error and sends processed event when transcription fails', async () => {
     const webContents = { send: vi.fn() }
     vi.mocked(deps.getWebContents).mockReturnValueOnce(webContents as unknown as ReturnType<typeof deps.getWebContents>)
-    vi.mocked(deps.whisper.transcribeFile).mockRejectedValueOnce(new Error('Whisper failed'))
+    vi.mocked(deps.whisper.transcribeAudioFile).mockRejectedValueOnce(new Error('Whisper failed'))
 
     await handlers[IPC.recording.import](evt, {})
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
@@ -415,5 +415,81 @@ describe('registerRecordingIpc', () => {
       IPC.recording.processed,
       { recordingId: 'rec-1' }
     )
+  })
+})
+
+// ─── Per-type import tests ────────────────────────────────────────────────────
+//
+// Each supported audio extension gets three assertions:
+//   1. say  — the recording title is derived correctly (filename without ext)
+//   2. do   — copyFileSync destination uses the correct extension
+//   3. do   — transcribeAudioFile is called with that same destination path
+
+const FIXTURE_DIR = join(__dirname, 'fixtures', 'audio')
+
+const AUDIO_TYPES: Array<{ ext: string; label: string }> = [
+  // Lossless / PCM
+  { ext: 'wav',  label: 'WAV (lossless PCM)' },
+  { ext: 'flac', label: 'FLAC (lossless compressed)' },
+  { ext: 'aiff', label: 'AIFF (Apple lossless)' },
+  { ext: 'aif',  label: 'AIF (AIFF short form)' },
+  // Compressed
+  { ext: 'mp3',  label: 'MP3 (MPEG Layer 3)' },
+  { ext: 'm4a',  label: 'M4A (AAC in MPEG-4 — Mac Voice Memos export)' },
+  { ext: 'aac',  label: 'AAC (raw AAC)' },
+  { ext: 'ogg',  label: 'OGG (Vorbis container)' },
+  { ext: 'opus', label: 'Opus (low-latency codec)' },
+  { ext: 'wma',  label: 'WMA (Windows Media Audio)' },
+  // Container formats
+  { ext: 'mp4',  label: 'MP4 (video/audio container)' },
+  { ext: 'mov',  label: 'MOV (QuickTime container)' },
+  { ext: 'mkv',  label: 'MKV (Matroska container)' },
+  { ext: 'webm', label: 'WebM (VP8/VP9/Opus container)' },
+  // Apple-specific
+  { ext: 'caf',  label: 'CAF (Apple Core Audio — Voice Memos on-device)' },
+]
+
+describe('registerRecordingIpc — import: per file-type', () => {
+  let handlers: Record<string, (...args: unknown[]) => unknown>
+  let deps: ReturnType<typeof makeDeps>
+
+  beforeEach(async () => {
+    // Re-import fs mock so copyFileSync spy is fresh per test
+    const { copyFileSync } = await import('fs')
+    vi.mocked(copyFileSync).mockClear()
+
+    vi.mocked(ipcMain.handle).mockReset()
+    handlers = captureHandlers()
+    deps = makeDeps()
+    registerRecordingIpc(deps)
+  })
+
+  it.each(AUDIO_TYPES)('$label — say: title strips extension', async ({ ext }) => {
+    const fixture = join(FIXTURE_DIR, `sample.${ext}`)
+    await handlers[IPC.recording.import](evt, { filePath: fixture })
+    // "say" — the recording title should be the bare filename with no extension
+    expect(deps.recordingRepo.create).toHaveBeenCalledWith('sample')
+  })
+
+  it.each(AUDIO_TYPES)('$label — do: destination path preserves extension', async ({ ext }) => {
+    const fixture = join(FIXTURE_DIR, `sample.${ext}`)
+    await handlers[IPC.recording.import](evt, { filePath: fixture })
+
+    const { copyFileSync } = await import('fs')
+    // "do" — the file is copied to a path ending in .<ext>
+    expect(vi.mocked(copyFileSync)).toHaveBeenCalledWith(
+      fixture,
+      expect.stringMatching(new RegExp(`\\.${ext}$`))
+    )
+  })
+
+  it.each(AUDIO_TYPES)('$label — do: transcribeAudioFile called with destination path', async ({ ext }) => {
+    const fixture = join(FIXTURE_DIR, `sample.${ext}`)
+    await handlers[IPC.recording.import](evt, { filePath: fixture })
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+
+    // "do" — Whisper receives the internal destination path, not the source
+    const [destPath] = vi.mocked(deps.whisper.transcribeAudioFile).mock.calls[0]
+    expect(destPath).toMatch(new RegExp(`rec-1\\.${ext}$`))
   })
 })

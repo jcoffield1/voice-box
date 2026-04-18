@@ -34,6 +34,7 @@ import type {
   ChatArgs,
   ChatResult,
   GetThreadArgs,
+  GetThreadsByRecordingArgs,
   GetThreadResult,
   GetThreadsResult,
   CreateThreadArgs,
@@ -68,7 +69,21 @@ import type {
   MergeSpeakersArgs,
   UpdateSpeakerNotesArgs,
   ResetVoiceArgs,
-  RecordingDebriefReadyPayload
+  RecordingDebriefReadyPayload,
+  GetTemplatesResult,
+  GetTemplateArgs,
+  GetTemplateResult,
+  CreateTemplateArgs,
+  CreateTemplateResult,
+  CloneTemplateArgs,
+  CloneTemplateResult,
+  UpdateTemplateArgs,
+  UpdateTemplateResult,
+  DeleteTemplateArgs,
+  ImportTemplateResult,
+  ExportTemplateArgs,
+  TestTemplateArgs,
+  TestTemplateResult
 } from '../shared/ipc-types'
 import type { TranscriptSegment } from '../shared/types'
 
@@ -151,6 +166,8 @@ const api = {
       invoke<GetThreadResult>(IPC.ai.getThread, args),
     getThreads: () =>
       invoke<GetThreadsResult>(IPC.ai.getThreads),
+    getThreadsByRecording: (args: GetThreadsByRecordingArgs) =>
+      invoke<GetThreadsResult>(IPC.ai.getThreadsByRecording, args),
     createThread: (args: CreateThreadArgs) =>
       invoke<CreateThreadResult>(IPC.ai.createThread, args),
     deleteThread: (args: DeleteThreadArgs) =>
@@ -231,8 +248,28 @@ const api = {
   // ─── Global shortcuts ─────────────────────────────────────────────────────
   shortcuts: {
     onPushToTalk: (cb: () => void) =>
-      on('shortcut:pushToTalk', cb as (...args: unknown[]) => void)
-  }
+      on('shortcut:pushToTalk', cb as (...args: unknown[]) => void)  },
+
+  // ─── Summary Templates ──────────────────────────────────────────────────
+  template: {
+    getAll: () =>
+      invoke<GetTemplatesResult>(IPC.template.getAll),
+    get: (args: GetTemplateArgs) =>
+      invoke<GetTemplateResult>(IPC.template.get, args),
+    create: (args: CreateTemplateArgs) =>
+      invoke<CreateTemplateResult>(IPC.template.create, args),
+    clone: (args: CloneTemplateArgs) =>
+      invoke<CloneTemplateResult>(IPC.template.clone, args),
+    update: (args: UpdateTemplateArgs) =>
+      invoke<UpdateTemplateResult>(IPC.template.update, args),
+    delete: (args: DeleteTemplateArgs) =>
+      invoke<void>(IPC.template.delete, args),
+    import: () =>
+      invoke<ImportTemplateResult>(IPC.template.import),
+    export: (args: ExportTemplateArgs) =>
+      invoke<void>(IPC.template.export, args),
+    test: (args: TestTemplateArgs) =>
+      invoke<TestTemplateResult>(IPC.template.test, args)  }
 }
 
 contextBridge.exposeInMainWorld('api', api)

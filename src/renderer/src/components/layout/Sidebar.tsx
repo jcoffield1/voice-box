@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Mic, Search, Settings, List, Users, MessageSquare, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Mic, Search, Settings, List, Users, MessageSquare, FileText, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useRecordingStore } from '../../store/recordingStore'
 
 const links = [
@@ -8,6 +8,7 @@ const links = [
   { to: '/search', label: 'Search', icon: Search },
   { to: '/chat', label: 'AI Chat', icon: MessageSquare },
   { to: '/speakers', label: 'Speakers', icon: Users },
+  { to: '/templates', label: 'Templates', icon: FileText },
   { to: '/settings', label: 'Settings', icon: Settings }
 ]
 

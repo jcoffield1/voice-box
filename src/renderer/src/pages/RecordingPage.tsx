@@ -2,8 +2,9 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import {
-  ArrowLeft, Pencil, Check, X, Download, FileText, Tag, StickyNote, Maximize2, Minimize2, Loader2
+  ArrowLeft, Pencil, Check, X, Download, FileText, Tag, StickyNote, Maximize2, Minimize2, Loader2, LayoutTemplate
 } from 'lucide-react'
+import type { SummaryTemplate } from '@shared/types'
 import TranscriptView from '../components/transcript/TranscriptView'
 import AIPanel from '../components/ai/AIPanel'
 import AudioPlayer from '../components/recording/AudioPlayer'
@@ -25,7 +26,7 @@ function formatDuration(seconds: number | null) {
   return `${s}s`
 }
 
-type Tab = 'transcript' | 'summary'
+type Tab = 'transcript' | 'summary' | 'notes'
 
 export default function RecordingPage() {
   const { id } = useParams<{ id: string }>()
@@ -56,6 +57,10 @@ export default function RecordingPage() {
   const [tagInput, setTagInput] = useState('')
   const tagInputRef = useRef<HTMLInputElement>(null)
 
+  // Template picker
+  const [templates, setTemplates] = useState<SummaryTemplate[]>([])
+  const [templateId, setTemplateId] = useState<string | null>(recording?.templateId ?? null)
+
   // Export
   const [exportOpen, setExportOpen] = useState(false)
   const [exportSuccess, setExportSuccess] = useState<string | null>(null)
@@ -69,7 +74,12 @@ export default function RecordingPage() {
   useEffect(() => {
     setNotesDraft(recording?.notes ?? '')
     setTags(recording?.tags ?? [])
+    setTemplateId(recording?.templateId ?? null)
   }, [recording?.id])
+
+  useEffect(() => {
+    window.api.template.getAll().then(({ templates: list }) => setTemplates(list)).catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (editingTitle && titleInputRef.current) titleInputRef.current.focus()
@@ -167,6 +177,25 @@ export default function RecordingPage() {
   // unmounted when RecordingPage re-renders (e.g. when debrief arrives).
   const summaryContent = (
     <div className="space-y-4">
+      {/* Summary Template */}
+      <div className="flex items-center gap-2">
+        <LayoutTemplate className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+        <select
+          className="input text-sm flex-1"
+          value={templateId ?? templates.find((t) => t.isDefault)?.id ?? templates[0]?.id ?? ''}
+          onChange={async (e) => {
+            const next = e.target.value || null
+            setTemplateId(next)
+            if (!id) return
+            const { recording: updated } = await window.api.recording.update({ recordingId: id, templateId: next })
+            if (updated) updateRecording(updated)
+          }}
+        >
+          {templates.map((t) => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
+      </div>
       {recording?.debrief ? (
         <div className="selectable text-sm text-zinc-300 leading-relaxed [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-zinc-100 [&_h1]:mt-4 [&_h1]:mb-1 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-zinc-100 [&_h2]:mt-4 [&_h2]:mb-1 [&_h3]:text-sm [&_h3]:font-medium [&_h3]:text-zinc-200 [&_h3]:mt-3 [&_h3]:mb-1 [&_p]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:mb-2 [&_li]:mb-0.5 [&_strong]:text-zinc-100 [&_strong]:font-semibold [&_table]:w-full [&_table]:text-xs [&_table]:border-collapse [&_th]:text-left [&_th]:text-zinc-400 [&_th]:pb-1 [&_th]:border-b [&_th]:border-surface-600 [&_td]:py-1 [&_td]:pr-4 [&_td]:border-b [&_td]:border-surface-700 [&_hr]:border-surface-600 [&_hr]:my-3 [&_blockquote]:border-l-2 [&_blockquote]:border-accent [&_blockquote]:pl-3 [&_blockquote]:text-zinc-400">
           <ReactMarkdown>{recording.debrief}</ReactMarkdown>
@@ -205,23 +234,12 @@ export default function RecordingPage() {
         playbackSeconds={playbackSeconds}
         onSeek={(t) => setSeekToSeconds(t)}
       />
+    </div>
+  )
 
-      {/* Notes */}
-      <div className="card space-y-2">
-        <label className="flex items-center gap-2 text-xs font-medium text-zinc-400">
-          <StickyNote className="w-3.5 h-3.5" />
-          Notes
-        </label>
-        <textarea
-          className="input text-sm resize-none w-full"
-          rows={3}
-          placeholder="Add notes about this recording…"
-          value={notesDraft}
-          onChange={(e) => { setNotesDraft(e.target.value); setNotesDirty(true) }}
-          onBlur={() => void saveNotes()}
-        />
-      </div>
-
+  // ── Notes tab content ─────────────────────────────────────────────────────
+  const notesTabContent = (
+    <div className="space-y-4">
       {/* Tags */}
       <div className="card space-y-2">
         <label className="flex items-center gap-2 text-xs font-medium text-zinc-400">
@@ -258,6 +276,22 @@ export default function RecordingPage() {
             onBlur={() => { if (tagInput.trim()) void addTag(tagInput) }}
           />
         </div>
+      </div>
+
+      {/* Notes */}
+      <div className="card space-y-2">
+        <label className="flex items-center gap-2 text-xs font-medium text-zinc-400">
+          <StickyNote className="w-3.5 h-3.5" />
+          Notes
+        </label>
+        <textarea
+          className="input text-sm resize-none w-full"
+          rows={8}
+          placeholder="Add notes about this recording…"
+          value={notesDraft}
+          onChange={(e) => { setNotesDraft(e.target.value); setNotesDirty(true) }}
+          onBlur={() => void saveNotes()}
+        />
       </div>
     </div>
   )
@@ -317,11 +351,21 @@ export default function RecordingPage() {
               Summary
               {isGeneratingDebrief && <Loader2 className="w-3 h-3 animate-spin" />}
             </button>
+            <button
+              className={`px-4 py-2 text-sm font-medium transition-colors -mb-px border-b-2 ${
+                activeTab === 'notes'
+                  ? 'border-accent text-accent'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
+              onClick={() => setActiveTab('notes')}
+            >
+              Notes
+            </button>
           </div>
 
           {/* Content — fills remaining height */}
           <div className="flex-1 overflow-y-auto min-h-0">
-            {activeTab === 'transcript' ? transcriptTabContent : summaryContent}
+            {activeTab === 'transcript' ? transcriptTabContent : activeTab === 'summary' ? summaryContent : notesTabContent}
           </div>
         </div>
       )}
@@ -481,6 +525,16 @@ export default function RecordingPage() {
               Summary
               {isGeneratingDebrief && <Loader2 className="w-3 h-3 animate-spin" />}
             </button>
+            <button
+              className={`px-4 py-2 text-sm font-medium transition-colors -mb-px border-b-2 ${
+                activeTab === 'notes'
+                  ? 'border-accent text-accent'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
+              onClick={() => setActiveTab('notes')}
+            >
+              Notes
+            </button>
             <div className="ml-auto mb-1">
               <button
                 className="btn-ghost p-1.5"
@@ -494,7 +548,7 @@ export default function RecordingPage() {
 
           {/* Tab content */}
           <div className="flex-1 overflow-y-auto">
-            {activeTab === 'transcript' ? transcriptTabContent : summaryContent}
+            {activeTab === 'transcript' ? transcriptTabContent : activeTab === 'summary' ? summaryContent : notesTabContent}
           </div>
         </div>
 

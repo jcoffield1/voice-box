@@ -102,6 +102,24 @@ export class WhisperService {
   }
 
   /**
+   * Transcribe any audio file that ffmpeg can decode (mp3, m4a, aac, flac, ogg,
+   * opus, wav, webm, mp4, mov, caf, wma, …).  Unlike transcribeFile(), this
+   * method does NOT wrap the bytes in a WAV header — it passes the path directly
+   * to faster-whisper/Whisper which decodes via ffmpeg internally.
+   *
+   * Use this for imported files.  Use transcribeFile() only for raw PCM buffers
+   * produced by the voice-input push-to-talk path.
+   */
+  async transcribeAudioFile(filePath: string): Promise<WhisperSegment[]> {
+    const response = await this.bridge.send<TranscribeResponse>('transcribe', 'transcribe', {
+      audio_path: filePath,
+      model_size: this.modelSize,
+      language: this.language ?? 'auto'
+    })
+    return response.segments
+  }
+
+  /**
    * Transcribe a pre-existing WAV or PCM file directly.
    * Used by VoiceInputService for push-to-talk commands.
    */

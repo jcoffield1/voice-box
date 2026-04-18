@@ -15,6 +15,7 @@ interface FtsRow {
 interface RecordingTitleRow {
   id: string
   title: string
+  template_id: string | null
 }
 
 const DEFAULT_LIMIT = 20
@@ -105,7 +106,7 @@ export class SearchService {
     matchType: SearchResult['matchType']
   ): SearchResult {
     const recording = this.db
-      .prepare<string, RecordingTitleRow>(`SELECT id, title FROM recordings WHERE id = ?`)
+      .prepare<string, RecordingTitleRow>(`SELECT id, title, template_id FROM recordings WHERE id = ?`)
       .get(row.recording_id)
 
     const snippet = row.text.length > 200 ? row.text.slice(0, 200) + '…' : row.text
@@ -114,6 +115,7 @@ export class SearchService {
       segmentId: row.id,
       recordingId: row.recording_id,
       recordingTitle: recording?.title ?? 'Unknown Recording',
+      templateId: recording?.template_id ?? null,
       text: row.text,
       speakerName: row.speaker_name,
       timestampStart: row.timestamp_start,
@@ -127,6 +129,10 @@ export class SearchService {
   private matchesFilters(result: SearchResult, query: SearchQuery): boolean {
     if (query.recordingId && result.recordingId !== query.recordingId) return false
     if (query.speakerName && result.speakerName?.toLowerCase() !== query.speakerName.toLowerCase()) return false
+    if ('templateId' in query) {
+      // null means "recordings using the default" (no explicit template assigned)
+      if (result.templateId !== query.templateId) return false
+    }
     return true
   }
 

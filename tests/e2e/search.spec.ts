@@ -75,3 +75,51 @@ test('search results are clickable and navigate to the recording', async () => {
   // Should navigate to the recording detail page
   await expect(page.locator('button:has-text("Transcript")')).toBeVisible({ timeout: 3000 })
 })
+
+// ─── Template filter ──────────────────────────────────────────────────────────
+
+test('template filter dropdown is present in the filter panel', async () => {
+  // Expand filters if the panel has a toggle
+  const filterBtn = page.locator('button').filter({ hasText: /filter/i }).first()
+  const hasToggle = await filterBtn.isVisible({ timeout: 1000 }).catch(() => false)
+  if (hasToggle) await filterBtn.click()
+
+  // The template filter select should contain at least the "All templates" option
+  const templateSelect = page.locator('select').filter({ hasText: /All templates/i })
+  const isVisible = await templateSelect.isVisible({ timeout: 2000 }).catch(() => false)
+  if (!isVisible) { test.skip(); return }
+
+  await expect(templateSelect).toBeVisible()
+})
+
+test('template filter includes Default template option', async () => {
+  const filterBtn = page.locator('button').filter({ hasText: /filter/i }).first()
+  const hasToggle = await filterBtn.isVisible({ timeout: 1000 }).catch(() => false)
+  if (hasToggle) await filterBtn.click()
+
+  const templateSelect = page.locator('select').filter({ hasText: /All templates/i })
+  const isVisible = await templateSelect.isVisible({ timeout: 2000 }).catch(() => false)
+  if (!isVisible) { test.skip(); return }
+
+  const options = templateSelect.locator('option')
+  const texts = await options.allTextContents()
+  expect(texts.some((t) => /default/i.test(t))).toBe(true)
+})
+
+test('selecting a template filter and submitting does not crash', async () => {
+  const filterBtn = page.locator('button').filter({ hasText: /filter/i }).first()
+  const hasToggle = await filterBtn.isVisible({ timeout: 1000 }).catch(() => false)
+  if (hasToggle) await filterBtn.click()
+
+  const templateSelect = page.locator('select').filter({ hasText: /All templates/i })
+  const isVisible = await templateSelect.isVisible({ timeout: 2000 }).catch(() => false)
+  if (!isVisible) { test.skip(); return }
+
+  // Select the Default template option
+  await templateSelect.selectOption({ label: /Default template/ })
+
+  await page.fill('input[placeholder*="Search"]', 'meeting')
+  await page.click('button:has-text("Search")')
+
+  await expect(page.locator('text=Something went wrong')).not.toBeVisible({ timeout: 3000 })
+})

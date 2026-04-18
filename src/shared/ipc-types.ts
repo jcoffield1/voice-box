@@ -14,6 +14,7 @@ import type {
   LLMModel,
   LLMProviderType,
   LLMFeature,
+  SummaryTemplate,
 } from './types'
 
 // ─── Recording IPC ───────────────────────────────────────────────────────────
@@ -53,6 +54,8 @@ export interface UpdateRecordingArgs {
   title?: string
   notes?: string
   tags?: string[]
+  /** Set / clear the associated summary template. Pass null to use the default. */
+  templateId?: string | null
 }
 
 export interface DeleteRecordingArgs {
@@ -164,6 +167,11 @@ export interface ChatArgs {
   recordingId: string | null
   model: string
   provider: LLMProviderType
+  /** When set, RAG context is restricted to recordings assigned to this template.
+   *  Pass null to restrict to recordings using the default (no template assigned). */
+  templateId?: string | null
+  /** Human-readable name of the selected template — used in the AI system prompt. */
+  templateName?: string
 }
 
 export interface ChatResult {
@@ -172,6 +180,10 @@ export interface ChatResult {
 
 export interface GetThreadArgs {
   threadId: string
+}
+
+export interface GetThreadsByRecordingArgs {
+  recordingId: string
 }
 
 export interface GetThreadResult {
@@ -333,6 +345,7 @@ export const IPC = {
     chat: 'ai:chat',
     getThread: 'ai:getThread',
     getThreads: 'ai:getThreads',
+    getThreadsByRecording: 'ai:getThreadsByRecording',
     createThread: 'ai:createThread',
     deleteThread: 'ai:deleteThread',
     updateThreadTitle: 'ai:updateThreadTitle',
@@ -371,6 +384,17 @@ export const IPC = {
     // Event pushed from main → renderer with partial / final transcript
     chunk: 'voiceInput:chunk',
     done: 'voiceInput:done'
+  },
+  template: {
+    getAll:  'template:getAll',
+    get:     'template:get',
+    create:  'template:create',
+    clone:   'template:clone',
+    update:  'template:update',
+    delete:  'template:delete',
+    import:  'template:import',
+    export:  'template:export',
+    test:    'template:test',
   }
 } as const
 
@@ -448,6 +472,79 @@ export interface SystemStatusResult {
   ollamaModels: string[]
   pythonAvailable: boolean
   whisperAvailable: boolean
+}
+
+// ─── Summary Template IPC ────────────────────────────────────────────────────
+
+export interface GetTemplatesResult {
+  templates: SummaryTemplate[]
+}
+
+export interface GetTemplateArgs {
+  templateId: string
+}
+
+export interface GetTemplateResult {
+  template: SummaryTemplate | null
+}
+
+export interface CreateTemplateArgs {
+  name: string
+  systemPrompt: string
+  userPromptTemplate: string
+}
+
+export interface CreateTemplateResult {
+  template: SummaryTemplate
+}
+
+export interface CloneTemplateArgs {
+  templateId: string
+}
+
+export interface CloneTemplateResult {
+  template: SummaryTemplate
+}
+
+export interface UpdateTemplateArgs {
+  templateId: string
+  name?: string
+  systemPrompt?: string
+  userPromptTemplate?: string
+}
+
+export interface UpdateTemplateResult {
+  template: SummaryTemplate | null
+}
+
+export interface DeleteTemplateArgs {
+  templateId: string
+}
+
+export interface ImportTemplateResult {
+  template: SummaryTemplate
+}
+
+export interface ExportTemplateArgs {
+  templateId: string
+}
+
+export interface TestTemplateArgs {
+  /** The system prompt to test. */
+  systemPrompt: string
+  /** The user prompt template (may contain {{title}} and {{transcript}} placeholders). */
+  userPromptTemplate: string
+  /** Recording whose title and transcript will be substituted into the template. */
+  recordingId: string
+  model: string
+  provider: LLMProviderType
+}
+
+export interface TestTemplateResult {
+  /** The LLM-generated debrief text. */
+  result: string
+  model: string
+  provider: string
 }
 
 // Derive union types

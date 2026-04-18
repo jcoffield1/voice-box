@@ -381,6 +381,51 @@ const MIGRATIONS: Migration[] = [
         SET embedding_samples = 30
         WHERE voice_embedding IS NOT NULL;
     `
+  },
+  {
+    version: 13,
+    name: 'create_summary_templates',
+    up: `
+      CREATE TABLE IF NOT EXISTS summary_templates (
+        id                    TEXT PRIMARY KEY,
+        name                  TEXT NOT NULL,
+        system_prompt         TEXT NOT NULL,
+        user_prompt_template  TEXT NOT NULL,
+        is_default            INTEGER NOT NULL DEFAULT 0,
+        created_at            INTEGER NOT NULL,
+        updated_at            INTEGER NOT NULL
+      );
+
+      -- Seed the built-in default template that mirrors the hard-coded prompt.
+      INSERT OR IGNORE INTO summary_templates
+        (id, name, system_prompt, user_prompt_template, is_default, created_at, updated_at)
+      VALUES (
+        'built-in-default',
+        'Meeting Debrief',
+        'You are a professional meeting analyst. Create a comprehensive debrief of this conversation.
+Structure your response with these sections:
+1. Executive Summary (2-3 sentences)
+2. Discussion Timeline (key topics in chronological order)
+3. Decisions Made (each decision with context and rationale)
+4. Action Items (who is responsible and what they need to do)
+5. Key Insights (important observations, patterns, or takeaways)
+6. Open Questions (anything unresolved or requiring follow-up)
+7. Participant Contributions (brief summary of each person''s role)
+
+Be thorough — this is the complete record of the conversation.',
+        'Please create a full debrief for this call titled "{{title}}":\n\n{{transcript}}',
+        1,
+        ${Date.now()},
+        ${Date.now()}
+      );
+    `
+  },
+  {
+    version: 14,
+    name: 'add_template_id_to_recordings',
+    up: `
+      ALTER TABLE recordings ADD COLUMN template_id TEXT;
+    `
   }
 ]
 

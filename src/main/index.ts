@@ -28,6 +28,8 @@ import { registerAiIpc } from './ipc/ai.ipc'
 import { registerSettingsIpc } from './ipc/settings.ipc'
 import { registerSpeakerIpc } from './ipc/speaker.ipc'
 import { registerVoiceIpc } from './ipc/voice.ipc'
+import { SummaryTemplateRepository } from './services/storage/repositories/SummaryTemplateRepository'
+import { registerTemplateIpc } from './ipc/template.ipc'
 import { IPC } from '@shared/ipc-types'
 import type { RecordingDebriefReadyPayload } from '@shared/ipc-types'
 
@@ -147,6 +149,7 @@ function initServices(): void {
   const speakerRepo = new SpeakerRepository(db)
   const conversationRepo = new ConversationRepository(db)
   const settingsRepo = new SettingsRepository(db)
+  const templateRepo = new SummaryTemplateRepository(db)
 
   // LLM / Embedding
   const llmService = new LLMService(settingsRepo)
@@ -619,26 +622,17 @@ function initServices(): void {
           })
           .join('\n')
 
-        const systemPrompt = `You are a professional meeting analyst. Create a comprehensive debrief of this conversation.
-Structure your response with these sections:
-1. Executive Summary (2-3 sentences)
-2. Discussion Timeline (key topics in chronological order)
-3. Decisions Made (each decision with context and rationale)
-4. Action Items (who is responsible and what they need to do)
-5. Key Insights (important observations, patterns, or takeaways)
-6. Open Questions (anything unresolved or requiring follow-up)
-7. Participant Contributions (brief summary of each person's role)
+        const template =
+          (recording.templateId ? templateRepo.findById(recording.templateId) : null) ??
+          templateRepo.findDefault()
 
-Be thorough — this is the complete record of the conversation.`
+        const userMessage = template.userPromptTemplate
+          .replace('{{title}}', recording.title)
+          .replace('{{transcript}}', transcript)
 
         const response = await llmService.complete('summarization', {
-          systemPrompt,
-          messages: [
-            {
-              role: 'user',
-              content: `Please create a full debrief for this call titled "${recording.title}":\n\n${transcript}`
-            }
-          ]
+          systemPrompt: template.systemPrompt,
+          messages: [{ role: 'user', content: userMessage }]
         })
 
         recordingRepo.update(recordingId, { debrief: response.text, debriefAt: Date.now() })
@@ -693,6 +687,7 @@ Be thorough — this is the complete record of the conversation.`
   })
   registerSpeakerIpc({ speakerRepo })
   registerVoiceIpc({ tts, voiceInput, settings: settingsRepo, getWebContents })
+  registerTemplateIpc({ templateRepo, recordingRepo, transcriptRepo, llm: llmService })
 }
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────

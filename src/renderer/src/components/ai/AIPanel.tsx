@@ -23,6 +23,36 @@ export default function AIPanel({ recordingId, initialMessage }: Props) {
   const prevMsgCount = useRef(messages.length)
   const prevStreaming = useRef(streaming)
 
+  // Scroll-to-bottom refs
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const justLoadedRef = useRef(false)
+
+  // On mount (or recordingId change), restore the most recent thread for this recording
+  useEffect(() => {
+    setThreadId(null)
+    void (async () => {
+      const { threads } = await window.api.ai.getThreadsByRecording({ recordingId })
+      if (threads.length > 0) {
+        justLoadedRef.current = true
+        setThreadId(threads[0].id)
+      }
+    })()
+  }, [recordingId])
+
+  // Scroll to bottom when messages load initially or new ones arrive
+  useEffect(() => {
+    if (!bottomRef.current || messages.length === 0) return
+    bottomRef.current.scrollIntoView({ behavior: justLoadedRef.current ? 'instant' : 'smooth' })
+    justLoadedRef.current = false
+  }, [messages.length])
+
+  // Also scroll when streaming content arrives
+  useEffect(() => {
+    if (streaming && bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [streaming])
+
   // Update input when initialMessage changes (e.g. navigating via "Ask AI about this")
   useEffect(() => {
     if (initialMessage) setInput(initialMessage)
@@ -159,6 +189,7 @@ export default function AIPanel({ recordingId, initialMessage }: Props) {
             </div>
           </div>
         )}
+        <div ref={bottomRef} />
       </div>
 
       {/* Input */}

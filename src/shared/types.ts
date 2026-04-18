@@ -17,6 +17,25 @@ export interface Recording {
   debriefAt: number | null
   notes: string | null
   tags: string[]
+  /** ID of the SummaryTemplate to use when auto-generating the debrief. null = use default template. */
+  templateId: string | null
+}
+
+export interface SummaryTemplate {
+  id: string
+  name: string
+  /** System prompt sent to the LLM as role:system. */
+  systemPrompt: string
+  /**
+   * User message template. Supports two placeholders:
+   *   {{title}}      — replaced with recording.title
+   *   {{transcript}} — replaced with the full formatted transcript
+   */
+  userPromptTemplate: string
+  /** True for the built-in default that ships with VoiceBox and cannot be deleted. */
+  isDefault: boolean
+  createdAt: number
+  updatedAt: number
 }
 
 export interface TranscriptSegment {
@@ -108,6 +127,7 @@ export interface SearchResult {
   segmentId: string
   recordingId: string
   recordingTitle: string
+  templateId: string | null
   text: string
   speakerName: string | null
   timestampStart: number
@@ -121,6 +141,8 @@ export interface SearchQuery {
   query: string
   recordingId?: string
   speakerName?: string
+  /** Filter to recordings assigned to this templateId. Pass null to match recordings using the default (no template assigned). */
+  templateId?: string | null
   dateFrom?: number
   dateTo?: number
   limit?: number

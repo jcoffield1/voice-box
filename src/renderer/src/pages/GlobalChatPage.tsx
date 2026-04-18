@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   MessageSquare, Send, Loader2, Mic, MicOff, Volume2, VolumeX,
-  Plus, Trash2, Clock, ChevronLeft, ChevronRight, Pencil
+  Plus, Trash2, Clock, ChevronLeft, ChevronRight, Pencil, LayoutTemplate
 } from 'lucide-react'
 import { useAIStore } from '../store/aiStore'
 import ChatMessageBubble from '../components/ai/ChatMessageBubble'
 import { useSettingsStore } from '../store/settingsStore'
-import type { ConversationThread } from '@shared/types'
+import type { ConversationThread, SummaryTemplate } from '@shared/types'
 
 function formatRelative(ts: number): string {
   const diff = Date.now() - ts
@@ -39,6 +39,9 @@ export default function GlobalChatPage() {
   const [input, setInput] = useState('')
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [voiceActive, setVoiceActive] = useState(false)
+  const [templates, setTemplates] = useState<SummaryTemplate[]>([])
+  // '' = no filter, else explicit templateId
+  const [templateFilter, setTemplateFilter] = useState<string>('')
   const providerMap = useSettingsStore((s) => s.providerMap)
   const provider = providerMap['conversation'] ?? 'ollama'
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -48,6 +51,10 @@ export default function GlobalChatPage() {
   useEffect(() => {
     void store.loadAllThreads()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    window.api.template.getAll().then(({ templates: all }) => setTemplates(all)).catch(() => {})
+  }, [])
 
   // Subscribe to streaming chunks for the active thread
   useEffect(() => {
@@ -134,8 +141,12 @@ export default function GlobalChatPage() {
     if (!t) return
     setInput('')
     const tid = await ensureThread()
-    await store.sendMessage(tid, t, null, '', provider)
-  }, [input, ensureThread, store, provider])
+    const resolvedTemplateId = templateFilter || undefined
+    const resolvedTemplateName = templateFilter
+      ? templates.find(tmpl => tmpl.id === templateFilter)?.name
+      : undefined
+    await store.sendMessage(tid, t, null, '', provider, resolvedTemplateId, resolvedTemplateName)
+  }, [input, ensureThread, store, provider, templateFilter, templates])
 
   const handleVoiceDown = useCallback(async () => {
     if (voiceActive) return
@@ -265,7 +276,24 @@ export default function GlobalChatPage() {
               <span className="text-xs text-zinc-500">Cross-recording</span>
             )}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2">
+            {/* Template scope filter — only meaningful in cross-recording mode */}
+            {templates.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <LayoutTemplate className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                <select
+                  className="input text-xs py-1 pl-2 pr-6 h-7"
+                  value={templateFilter}
+                  onChange={(e) => setTemplateFilter(e.target.value)}
+                  title="Scope AI context to a template category"
+                >
+                  <option value="">All recordings</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <button
               className="btn-ghost py-1.5 px-2.5 text-xs"
               onClick={() => void handleNewChat()}

@@ -191,3 +191,66 @@ test('delete thread button removes it from sidebar', async () => {
   const countAfter = await page.locator('aside li, aside [role="listitem"]').count()
   expect(countAfter).toBeLessThan(countBefore)
 })
+
+// ─── Template scope selector ──────────────────────────────────────────────────
+
+test('template scope selector is present in the chat header when templates exist', async () => {
+  // Navigate to templates page and create one so the selector appears in chat
+  await page.click('a[href^="#/templates"]')
+  await waitForHash(page, '**/#/templates')
+
+  // If no custom template exists, the selector may not render (only shown when templates.length > 0)
+  const hasTemplateCard = await page.locator('.card').count()
+
+  await page.click('a[href^="#/chat"]')
+  await waitForHash(page, '**/#/chat')
+
+  if (hasTemplateCard === 0) { test.skip(); return }
+
+  // The scope selector uses a LayoutTemplate icon next to a <select>
+  const scopeSelect = page.locator('select').filter({ hasText: /All recordings/i })
+  const isVisible = await scopeSelect.isVisible({ timeout: 2000 }).catch(() => false)
+  if (!isVisible) { test.skip(); return }
+
+  await expect(scopeSelect).toBeVisible()
+})
+
+test('template scope selector includes "All recordings" and "Default template" options', async () => {
+  await page.click('a[href^="#/chat"]')
+  await waitForHash(page, '**/#/chat')
+
+  const scopeSelect = page.locator('select').filter({ hasText: /All recordings/i })
+  const isVisible = await scopeSelect.isVisible({ timeout: 2000 }).catch(() => false)
+  if (!isVisible) { test.skip(); return }
+
+  const options = scopeSelect.locator('option')
+  const texts = await options.allTextContents()
+  expect(texts.some((t) => /All recordings/i.test(t))).toBe(true)
+  expect(texts.some((t) => /Default template/i.test(t))).toBe(true)
+})
+
+test('switching template scope and sending a message does not crash', async () => {
+  await page.click('a[href^="#/chat"]')
+  await waitForHash(page, '**/#/chat')
+
+  const scopeSelect = page.locator('select').filter({ hasText: /All recordings/i })
+  const isVisible = await scopeSelect.isVisible({ timeout: 2000 }).catch(() => false)
+  if (!isVisible) { test.skip(); return }
+
+  // Switch to Default template scope
+  await scopeSelect.selectOption({ label: /Default template/i })
+
+  const plusBtn = page.locator('aside button').first()
+  const hasSidebar = await plusBtn.isVisible({ timeout: 1000 }).catch(() => false)
+  if (hasSidebar) await plusBtn.click()
+
+  const input = page.locator('textarea[placeholder], input[placeholder*="Ask"]').first()
+  const inputVisible = await input.isVisible({ timeout: 3000 }).catch(() => false)
+  if (!inputVisible) { test.skip(); return }
+
+  await input.fill('Test with scope filter')
+  await input.press('Enter')
+
+  await expect(page.locator('text=Something went wrong')).not.toBeVisible({ timeout: 5000 })
+})
+

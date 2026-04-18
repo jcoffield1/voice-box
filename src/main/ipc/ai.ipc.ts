@@ -7,6 +7,7 @@ import type {
   ChatResult,
   GetThreadArgs,
   GetThreadResult,
+  GetThreadsByRecordingArgs,
   GetThreadsResult,
   CreateThreadArgs,
   CreateThreadResult,
@@ -24,7 +25,7 @@ import type { TranscriptRepository } from '../services/storage/repositories/Tran
 import type { SpeakerRepository } from '../services/storage/repositories/SpeakerRepository'
 import type { SearchService } from '../services/search/SearchService'
 import type { WebContents } from 'electron'
-import type { TranscriptSegment } from '@shared/types'
+import type { TranscriptSegment, Recording } from '@shared/types'
 import { estimateTokens } from '../services/llm/providers/LLMProvider'
 import { classifyIntent, refToSpeakerLabel } from '../services/ai/IntentClassifier'
 
@@ -41,17 +42,25 @@ function buildTranscriptContext(segments: TranscriptSegment[]): string {
 }
 
 const RAG_CONTEXT_RESULTS = 8 // max segments to inject for cross-recording chat
+const RAG_PREFETCH_MULTIPLIER = 5 // over-fetch when template filtering to avoid post-filter starvation
 
-async function buildRagContext(query: string, search: SearchService): Promise<string> {
+async function buildRagContext(query: string, search: SearchService, templateId?: string | null, templateName?: string): Promise<string> {
   try {
-    const results = await search.query({ query, limit: RAG_CONTEXT_RESULTS })
+    // When filtering by template, fetch more candidates to compensate for post-filter attrition.
+    const isFiltered = templateId !== undefined
+    const limit = isFiltered ? RAG_CONTEXT_RESULTS * RAG_PREFETCH_MULTIPLIER : RAG_CONTEXT_RESULTS
+    const searchQuery: Parameters<typeof search.query>[0] = { query, limit }
+    if (isFiltered) searchQuery.templateId = templateId
+    const rawResults = await search.query(searchQuery)
+    const results = isFiltered ? rawResults.slice(0, RAG_CONTEXT_RESULTS) : rawResults
     if (results.length === 0) return ''
+    const scopeNote = templateName ? ` from the "${templateName}" category` : ''
     const lines = results.map((r) => {
       const ts = `${Math.floor(r.timestampStart / 60)}:${String(Math.floor(r.timestampStart % 60)).padStart(2, '0')}`
       const speaker = r.speakerName ? `${r.speakerName}: ` : ''
       return `[${r.recordingTitle} @ ${ts}] ${speaker}${r.text}`
     })
-    return `RELEVANT TRANSCRIPT EXCERPTS (from ${new Set(results.map((r) => r.recordingId)).size} recording(s)):
+    return `RELEVANT TRANSCRIPT EXCERPTS${scopeNote} (from ${new Set(results.map((r) => r.recordingId)).size} recording(s)):
 ${lines.join('\n')}`
   } catch {
     return ''
@@ -150,7 +159,7 @@ Structure your response with:
 
     // Build context
     let transcriptContext = ''
-    let recording = null
+    let recording: Recording | null = null
     let systemPrompt: string
 
     if (args.recordingId) {
@@ -170,14 +179,17 @@ ${transcriptContext}
 When referencing specific moments, include the speaker name and timestamp. Be concise and accurate.`
     } else {
       // Cross-recording mode: use RAG to inject relevant context from all recordings
-      const ragContext = await buildRagContext(args.message, searchService)
+      const ragContext = await buildRagContext(args.message, searchService, args.templateId, args.templateName)
+      const scopeDescription = args.templateName
+        ? `the "${args.templateName}" category of recordings`
+        : 'the user\'s recorded conversations'
       systemPrompt = ragContext
-        ? `You are an intelligent assistant with access to the user's recorded conversations.
-Answer questions by drawing on the provided transcript excerpts. Always cite the recording title and timestamp when referencing content.
-If the provided context doesn't contain the answer, say so clearly.
+        ? `You are an intelligent assistant with access to ${scopeDescription}.
+Answer questions ONLY using the provided transcript excerpts below. Do NOT draw on general knowledge to fill gaps — if the provided excerpts don't contain the answer, say so clearly and cite that the scope is limited to ${scopeDescription}.
+Always cite the recording title and timestamp when referencing content.
 
 ${ragContext}`
-        : `You are a helpful AI assistant for a call transcription application. The user hasn't recorded anything yet, or no relevant content was found for this query.`
+        : `You are a helpful AI assistant for a call transcription application. No relevant content was found${args.templateName ? ` in the "${args.templateName}" category` : ''}. Let the user know and suggest they broaden their scope or check that recordings have been assigned to that template.`
     }
 
     const history = conversationRepo.findMessagesByThread(thread.id)
@@ -226,6 +238,11 @@ ${ragContext}`
 
   ipcMain.handle(IPC.ai.getThreads, async (): Promise<GetThreadsResult> => {
     const threads = conversationRepo.findAllThreads()
+    return { threads }
+  })
+
+  ipcMain.handle(IPC.ai.getThreadsByRecording, async (_event, args: GetThreadsByRecordingArgs): Promise<GetThreadsResult> => {
+    const threads = conversationRepo.findThreadsByRecording(args.recordingId)
     return { threads }
   })
 
