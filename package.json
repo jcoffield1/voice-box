@@ -1,6 +1,6 @@
 {
   "name": "call-transcriber",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local-first Electron app for call recording, transcription, and AI analysis",
   "main": "./out/main/index.js",
   "author": "",
