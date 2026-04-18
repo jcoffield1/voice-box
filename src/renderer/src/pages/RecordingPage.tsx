@@ -9,6 +9,7 @@ import TranscriptView from '../components/transcript/TranscriptView'
 import AIPanel from '../components/ai/AIPanel'
 import AudioPlayer from '../components/recording/AudioPlayer'
 import { useRecordingStore } from '../store/recordingStore'
+import DictationButton from '../components/notes/DictationButton'
 
 function formatDate(ts: number) {
   return new Date(ts).toLocaleString('en-US', {
@@ -56,6 +57,7 @@ export default function RecordingPage() {
   const [tags, setTags] = useState<string[]>(recording?.tags ?? [])
   const [tagInput, setTagInput] = useState('')
   const tagInputRef = useRef<HTMLInputElement>(null)
+  const notesTextareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Template picker
   const [templates, setTemplates] = useState<SummaryTemplate[]>([])
@@ -280,11 +282,18 @@ export default function RecordingPage() {
 
       {/* Notes */}
       <div className="card space-y-2">
-        <label className="flex items-center gap-2 text-xs font-medium text-zinc-400">
-          <StickyNote className="w-3.5 h-3.5" />
-          Notes
-        </label>
+        <div className="flex items-center justify-between">
+          <label className="flex items-center gap-2 text-xs font-medium text-zinc-400">
+            <StickyNote className="w-3.5 h-3.5" />
+            Notes
+          </label>
+          <DictationButton
+            textareaRef={notesTextareaRef}
+            onChange={(v) => { setNotesDraft(v); setNotesDirty(true) }}
+          />
+        </div>
         <textarea
+          ref={notesTextareaRef}
           className="input text-sm resize-none w-full"
           rows={8}
           placeholder="Add notes about this recording…"
