@@ -55,6 +55,16 @@ export default function SearchResultCard({ result }: Props) {
         {result.snippet ?? result.text}
       </p>
 
+      {result.recordingTags.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {result.recordingTags.map((tag) => (
+            <span key={tag} className="text-[10px] bg-accent/10 text-accent/80 border border-accent/20 rounded-full px-1.5 py-0.5">
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="mt-2 flex items-center gap-3 text-xs text-zinc-600">
         <span>Score: {result.score.toFixed(3)}</span>
         <span className="capitalize">{result.matchType}</span>

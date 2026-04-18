@@ -16,6 +16,8 @@ interface RecordingTitleRow {
   id: string
   title: string
   template_id: string | null
+  notes: string | null
+  tags: string
 }
 
 const DEFAULT_LIMIT = 20
@@ -37,7 +39,14 @@ export class SearchService {
       this.keywordSearch(query, limit)
     ])
 
-    return this.mergeRrf(semanticResults, keywordResults, limit)
+    // Include recordings whose notes/tags match the query text
+    const notesResults = this.notesAndTagsSearch(query, Math.min(limit, 5))
+    const combinedKeyword = [
+      ...keywordResults,
+      ...notesResults.filter((nr) => !keywordResults.some((kr) => kr.segmentId === nr.segmentId))
+    ]
+
+    return this.mergeRrf(semanticResults, combinedKeyword, limit)
   }
 
   private async semanticSearch(query: SearchQuery, limit: number): Promise<SearchResult[]> {
@@ -106,7 +115,7 @@ export class SearchService {
     matchType: SearchResult['matchType']
   ): SearchResult {
     const recording = this.db
-      .prepare<string, RecordingTitleRow>(`SELECT id, title, template_id FROM recordings WHERE id = ?`)
+      .prepare<string, RecordingTitleRow>(`SELECT id, title, template_id, notes, tags FROM recordings WHERE id = ?`)
       .get(row.recording_id)
 
     const snippet = row.text.length > 200 ? row.text.slice(0, 200) + '…' : row.text
@@ -116,6 +125,8 @@ export class SearchService {
       recordingId: row.recording_id,
       recordingTitle: recording?.title ?? 'Unknown Recording',
       templateId: recording?.template_id ?? null,
+      recordingNotes: recording?.notes ?? null,
+      recordingTags: JSON.parse(recording?.tags ?? '[]') as string[],
       text: row.text,
       speakerName: row.speaker_name,
       timestampStart: row.timestamp_start,
@@ -124,6 +135,45 @@ export class SearchService {
       matchType,
       snippet
     }
+  }
+
+  /** Search recordings whose notes or tags contain any query term; returns one representative segment per match. */
+  private notesAndTagsSearch(query: SearchQuery, limit: number): SearchResult[] {
+    const terms = query.query.replace(/['"][*]/g, '').trim().split(/\s+/).filter(Boolean)
+    if (terms.length === 0) return []
+
+    const notesConds = terms.map(() => 'LOWER(r.notes) LIKE ?').join(' OR ')
+    const tagsConds = terms.map(() => 'LOWER(r.tags) LIKE ?').join(' OR ')
+    const params = terms.map((w) => `%${w.toLowerCase()}%`)
+
+    const matchingIds = this.db
+      .prepare<unknown[], { recording_id: string }>(
+        `SELECT DISTINCT r.id as recording_id
+         FROM recordings r
+         WHERE (r.notes IS NOT NULL AND r.notes != '' AND (${notesConds}))
+            OR (r.tags IS NOT NULL AND r.tags != '[]' AND (${tagsConds}))
+         LIMIT ?`
+      )
+      .all([...params, ...params, limit])
+
+    const results: SearchResult[] = []
+    for (const { recording_id } of matchingIds) {
+      const row = this.db
+        .prepare<string, FtsRow & { recording_id: string }>(
+          `SELECT ts.id, ts.recording_id, ts.text, ts.speaker_name,
+                  ts.timestamp_start, ts.timestamp_end, 0 as rank
+           FROM transcript_segments ts
+           WHERE ts.recording_id = ?
+           ORDER BY ts.timestamp_start ASC
+           LIMIT 1`
+        )
+        .get(recording_id)
+      if (row) {
+        const r = this.rowToResult(row, 0.5, 'keyword')
+        if (this.matchesFilters(r, query)) results.push(r)
+      }
+    }
+    return results
   }
 
   private matchesFilters(result: SearchResult, query: SearchQuery): boolean {

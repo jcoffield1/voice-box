@@ -262,6 +262,8 @@ describe('registerAiIpc — ai:chat template scoping', () => {
         segmentId: 'seg-1',
         recordingId: 'rec-1',
         recordingTitle: 'Q1 Sales Call',
+        recordingNotes: null,
+        recordingTags: [],
         text: 'Pipeline looks strong this quarter.',
         speakerName: 'Alice',
         timestampStart: 10,

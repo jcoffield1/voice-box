@@ -60,8 +60,24 @@ async function buildRagContext(query: string, search: SearchService, templateId?
       const speaker = r.speakerName ? `${r.speakerName}: ` : ''
       return `[${r.recordingTitle} @ ${ts}] ${speaker}${r.text}`
     })
-    return `RELEVANT TRANSCRIPT EXCERPTS${scopeNote} (from ${new Set(results.map((r) => r.recordingId)).size} recording(s)):
-${lines.join('\n')}`
+
+    // Append per-recording notes/tags so the AI has that context too
+    const recordingMeta = new Map<string, { title: string; notes: string | null; tags: string[] }>()
+    for (const r of results) {
+      if (!recordingMeta.has(r.recordingId)) {
+        recordingMeta.set(r.recordingId, { title: r.recordingTitle, notes: r.recordingNotes ?? null, tags: r.recordingTags ?? [] })
+      }
+    }
+    const metaLines: string[] = []
+    for (const [, meta] of recordingMeta) {
+      const parts: string[] = []
+      if (meta.tags.length > 0) parts.push(`Tags: ${meta.tags.join(', ')}`)
+      if (meta.notes?.trim()) parts.push(`Notes: ${meta.notes.trim().slice(0, 400)}`)
+      if (parts.length > 0) metaLines.push(`"${meta.title}": ${parts.join(' | ')}`)
+    }
+    const metaBlock = metaLines.length > 0 ? `\n\nRECORDING CONTEXT:\n${metaLines.join('\n')}` : ''
+
+    return `RELEVANT TRANSCRIPT EXCERPTS${scopeNote} (from ${new Set(results.map((r) => r.recordingId)).size} recording(s)):\n${lines.join('\n')}${metaBlock}`
   } catch {
     return ''
   }
@@ -172,6 +188,8 @@ RECORDING DETAILS:
 Title: ${recording?.title ?? 'Unknown'}
 Date: ${recording ? new Date(recording.createdAt).toLocaleDateString() : 'Unknown'}
 Duration: ${recording?.duration ? `${Math.floor(recording.duration / 60)} minutes` : 'unknown'}
+Tags: ${recording?.tags?.length ? recording.tags.join(', ') : 'none'}
+Notes: ${recording?.notes?.trim() || 'none'}
 
 FULL TRANSCRIPT:
 ${transcriptContext}

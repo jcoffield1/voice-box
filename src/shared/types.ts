@@ -128,6 +128,8 @@ export interface SearchResult {
   recordingId: string
   recordingTitle: string
   templateId: string | null
+  recordingNotes: string | null
+  recordingTags: string[]
   text: string
   speakerName: string | null
   timestampStart: number
