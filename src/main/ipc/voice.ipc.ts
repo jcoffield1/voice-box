@@ -59,9 +59,11 @@ export function registerVoiceIpc(deps: VoiceIpcDeps): void {
       const customVoiceId = (settings.get('tts.customVoiceId') as string | null) || null
       if (customVoiceId) {
         try {
-          const audioPath = await ttsCloningService.synthesize(customVoiceId, text)
-          // Play the resulting WAV via the macOS TTSService audio player
-          await tts.playFile(audioPath)
+          // Sentence-level streaming: play each sentence as soon as it is ready
+          // instead of waiting for the full utterance — reduces perceived latency.
+          await ttsCloningService.synthesizeStreaming(customVoiceId, text, async (audioPath) => {
+            await tts.playFile(audioPath)
+          })
         } catch (err) {
           console.error('[TTS/Qwen3] synthesis error:', err)
         }

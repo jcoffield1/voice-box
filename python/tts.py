@@ -37,6 +37,39 @@ import threading
 import contextlib
 from pathlib import Path
 
+# ─── FFmpeg library path setup (required by torchaudio ≥ 2.6 / torchcodec) ───
+# torchaudio >= 2.6 uses torchcodec as its default audio I/O backend.
+# torchcodec needs FFmpeg shared libraries (.dylib) loadable via dlopen().
+# Homebrew installs FFmpeg to /usr/local (Intel) or /opt/homebrew (arm64),
+# neither of which is on the default dyld search path inside an Electron process.
+# Setting os.environ here works because all f5_tts/torchaudio imports are lazy —
+# torchcodec's ctypes.CDLL() hasn't run yet at module load time, so the updated
+# DYLD_LIBRARY_PATH is visible when dlopen() is eventually called.
+def _setup_dyld_ffmpeg_path() -> None:
+    if sys.platform != 'darwin':
+        return
+    try:
+        result = subprocess.run(
+            ['brew', '--prefix', 'ffmpeg'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return
+        lib_path = os.path.join(result.stdout.strip(), 'lib')
+        if not os.path.isdir(lib_path):
+            return
+        existing = os.environ.get('DYLD_LIBRARY_PATH', '')
+        parts = [p for p in existing.split(':') if p]
+        if lib_path not in parts:
+            os.environ['DYLD_LIBRARY_PATH'] = ':'.join([lib_path] + parts)
+            print(f"[tts] Added {lib_path} to DYLD_LIBRARY_PATH for torchcodec",
+                  file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"[tts] Warning: could not detect Homebrew FFmpeg prefix: {exc}",
+              file=sys.stderr, flush=True)
+
+_setup_dyld_ffmpeg_path()
+
 # ─── Model configuration ──────────────────────────────────────────────────────
 
 # F5-TTS v1 Base — flow-matching voice cloning with Vocos vocoder
@@ -47,6 +80,62 @@ F5TTS_CKPT_FILE = "model_1250000.safetensors"
 _model = None          # loaded F5TTS instance
 _model_loaded = False  # True once weights are in memory
 _model_lock = threading.Lock()
+
+_fw_model = None       # faster-whisper model for reference audio auto-transcription
+_fw_model_lock = threading.Lock()
+_torchaudio_patched = False  # True once we've applied the soundfile shim
+
+# ─── torchaudio / torchcodec compatibility shim ───────────────────────────────
+# torchaudio >= 2.6 defaults to torchcodec for audio I/O, which requires arm64
+# FFmpeg shared libraries (needs Homebrew at /opt/homebrew on Apple Silicon).
+# If those libs are unavailable, we patch torchaudio.load with soundfile before
+# f5_tts is imported, so utils_infer.py's torchaudio.load(ref_audio) call works.
+# soundfile handles WAV/FLAC/OGG natively and is already installed in the venv.
+def _patch_torchaudio_if_needed() -> None:
+    global _torchaudio_patched
+    if _torchaudio_patched:
+        return
+
+    import torchaudio  # ensure the module is cached in sys.modules before f5_tts imports it
+
+    # Probe whether torchcodec's C extension can load (it needs system FFmpeg)
+    _ok = False
+    try:
+        from torchcodec._core import ops as _tc_ops  # noqa
+        _ok = True
+    except Exception:
+        # Remove partial torchcodec submodules so they don't interfere later
+        for _k in list(sys.modules.keys()):
+            if 'torchcodec' in _k:
+                del sys.modules[_k]
+
+    if _ok:
+        return  # all good, torchcodec works
+
+    try:
+        import soundfile as _sf
+        import torch as _th
+
+        def _sf_load(uri, frame_offset: int = 0, num_frames: int = -1,
+                     normalize: bool = True, channels_first: bool = True, **_kw):
+            _data, _sr = _sf.read(str(uri), dtype='float32', always_2d=True)
+            _t = _th.from_numpy(_data.T.copy())  # (channels, samples)
+            if frame_offset > 0:
+                _t = _t[:, frame_offset:]
+            if num_frames > 0:
+                _t = _t[:, :num_frames]
+            if not channels_first:
+                _t = _t.T
+            return _t, _sr
+
+        torchaudio.load = _sf_load
+        _torchaudio_patched = True
+        print("[tts] torchcodec C libs not loadable (need arm64 FFmpeg); "
+              "patched torchaudio.load → soundfile backend",
+              file=sys.stderr, flush=True)
+    except ImportError as _exc:
+        print(f"[tts] Warning: both torchcodec and soundfile unavailable: {_exc}",
+              file=sys.stderr, flush=True)
 
 # ─── Suppress F5-TTS stdout noise ─────────────────────────────────────────────
 # F5-TTS has unconditional print() calls that would corrupt the JSON stdout
@@ -99,7 +188,33 @@ def handle_download_model(_payload: dict) -> dict:
     return {"status": "ready"}
 
 
-# ─── Lazy model loader ───────────────────────────────────────────────────────
+# ─── Lazy faster-whisper loader (reference audio transcription) ─────────────
+
+def _get_fw_model():
+    """Lazy-load faster-whisper-base for transcribing reference audio clips.
+
+    Uses the same cached model as transcribe.py (Systran/faster-whisper-base),
+    avoiding the 1.5 GB whisper-large-v3-turbo that F5-TTS would load instead.
+    """
+    global _fw_model
+    with _fw_model_lock:
+        if _fw_model is None:
+            from faster_whisper import WhisperModel  # type: ignore
+            print("[tts] Loading faster-whisper-base for ref-audio transcription...",
+                  file=sys.stderr, flush=True)
+            _fw_model = WhisperModel("base", device="cpu", compute_type="int8")
+        return _fw_model
+
+
+def _transcribe_ref_audio(audio_path: str) -> str:
+    """Return a transcript for `audio_path` using faster-whisper-base."""
+    fw = _get_fw_model()
+    segments, _ = fw.transcribe(audio_path, beam_size=5)
+    text = " ".join(seg.text.strip() for seg in segments).strip()
+    return text if text else "."
+
+
+# ─── Lazy F5-TTS model loader ─────────────────────────────────────────────────
 
 def _get_model():
     global _model, _model_loaded
@@ -108,6 +223,7 @@ def _get_model():
             return _model
 
         try:
+            _patch_torchaudio_if_needed()   # MUST run before f5_tts is imported
             from f5_tts.api import F5TTS  # type: ignore
 
             print("[tts] Loading F5-TTS (flow-matching voice cloning)...", file=sys.stderr, flush=True)
@@ -145,7 +261,7 @@ def handle_warmup(_payload: dict) -> dict:
 def handle_synthesize(payload: dict) -> dict:
     text: str = payload.get("text", "").strip()
     reference_audio: str = payload.get("reference_audio", "")
-    reference_transcript: str = payload.get("reference_transcript", "")
+    reference_transcript: str = payload.get("reference_transcript", "").strip()
     output_path: str = payload.get("output_path", "")
 
     if not text:
@@ -161,11 +277,21 @@ def handle_synthesize(payload: dict) -> dict:
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
+    # When no transcript is stored, transcribe the reference clip ourselves using
+    # faster-whisper-base (already cached).  This prevents F5-TTS from loading its
+    # own whisper-large-v3-turbo (1.5 GB) which causes multi-minute hangs.
+    if not reference_transcript:
+        print("[tts] ref_text is empty — transcribing via faster-whisper-base...",
+              file=sys.stderr, flush=True)
+        reference_transcript = _transcribe_ref_audio(reference_audio)
+        print(f"[tts] auto-transcript: {reference_transcript!r}", file=sys.stderr, flush=True)
+
     model = _get_model()
 
-    # If ref_text is empty, F5-TTS auto-transcribes using Whisper (with caching).
-    # Redirect stdout -> stderr to prevent F5-TTS's print() calls from corrupting
-    # the JSON IPC channel.
+    # Redirect stdout -> stderr to prevent F5-TTS's unconditional print() calls
+    # from corrupting the JSON IPC channel.
+    # nfe_step=16 halves the default 32 ODE steps — cuts inference ~50% with
+    # minimal quality loss for voice-cloning use cases.
     with _stdout_to_stderr():
         model.infer(
             ref_file=reference_audio,
@@ -173,9 +299,109 @@ def handle_synthesize(payload: dict) -> dict:
             gen_text=text,
             show_info=lambda *a, **kw: None,
             file_wave=output_path,
+            nfe_step=16,
         )
 
     return {"audio_path": os.path.abspath(output_path)}
+
+
+# ─── Sentence splitter ──────────────────────────────────────────────────────
+
+import re as _re
+
+_SENTENCE_END = _re.compile(r'(?<=[.!?])(?:\s+|$)')
+
+
+def _split_sentences(text: str, min_chars: int = 20) -> list:
+    """Split text into sentences, merging very short fragments into the next."""
+    parts = [s.strip() for s in _SENTENCE_END.split(text) if s.strip()]
+    merged: list = []
+    buf = ""
+    for p in parts:
+        buf = (buf + " " + p).strip() if buf else p
+        if len(buf) >= min_chars:
+            merged.append(buf)
+            buf = ""
+    if buf:
+        if merged:
+            merged[-1] = (merged[-1] + " " + buf).strip()
+        else:
+            merged.append(buf)
+    return merged if merged else [text]
+
+
+# ─── Handle: synthesize_stream ───────────────────────────────────────────────
+# Unlike synthesize, this handler DOES NOT return a single response dict.
+# Instead it writes multiple JSON lines directly to stdout, each tagged with
+# the same request id and containing one sentence's WAV path, before emitting
+# a final {"done": true} line.  The main loop detects streaming=True in the
+# handler and uses this special path.
+
+def handle_synthesize_stream(req_id: str, payload: dict) -> None:
+    """Generate speech sentence-by-sentence, flushing each chunk immediately."""
+    text: str = payload.get("text", "").strip()
+    reference_audio: str = payload.get("reference_audio", "")
+    reference_transcript: str = payload.get("reference_transcript", "").strip()
+    output_dir: str = payload.get("output_dir", "")
+
+    def _emit(obj: dict) -> None:
+        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+    def _err(msg: str) -> None:
+        _emit({"id": req_id, "success": False, "error": msg})
+
+    if not text:
+        _err("'text' is required."); return
+    if not reference_audio:
+        _err("'reference_audio' is required."); return
+    if not os.path.exists(reference_audio):
+        _err(f"reference_audio not found: {reference_audio!r}"); return
+    if not output_dir:
+        _err("'output_dir' is required."); return
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Ensure reference transcript
+    ref_transcript = reference_transcript
+    if not ref_transcript:
+        print("[tts] ref_text empty — transcribing via faster-whisper-base...",
+              file=sys.stderr, flush=True)
+        ref_transcript = _transcribe_ref_audio(reference_audio)
+
+    model = _get_model()
+    sentences = _split_sentences(text)
+    print(f"[tts] synthesize_stream: {len(sentences)} sentence(s)",
+          file=sys.stderr, flush=True)
+
+    import uuid as _uuid
+    for i, sentence in enumerate(sentences):
+        out_path = os.path.join(output_dir, f"{_uuid.uuid4()}.wav")
+        try:
+            with _stdout_to_stderr():
+                model.infer(
+                    ref_file=reference_audio,
+                    ref_text=ref_transcript,
+                    gen_text=sentence,
+                    show_info=lambda *a, **kw: None,
+                    file_wave=out_path,
+                    nfe_step=16,
+                )
+            _emit({
+                "id": req_id,
+                "success": True,
+                "streaming": True,
+                "done": False,
+                "data": {
+                    "audio_path": os.path.abspath(out_path),
+                    "sentence_index": i,
+                    "sentence_count": len(sentences),
+                }
+            })
+        except Exception as exc:
+            _err(str(exc)); return
+
+    _emit({"id": req_id, "success": True, "streaming": True, "done": True, "data": {}})
 
 
 # ─── Handle: clip_audio ───────────────────────────────────────────────────────
@@ -266,13 +492,17 @@ def handle_probe_duration(payload: dict) -> dict:
 # ─── Dispatch table ───────────────────────────────────────────────────────────
 
 HANDLERS = {
-    "check_model":    handle_check_model,
-    "download_model": handle_download_model,
-    "warmup":         handle_warmup,
-    "synthesize":     handle_synthesize,
-    "clip_audio":     handle_clip_audio,
-    "probe_duration": handle_probe_duration,
+    "check_model":       handle_check_model,
+    "download_model":    handle_download_model,
+    "warmup":            handle_warmup,
+    "synthesize":        handle_synthesize,
+    "synthesize_stream": handle_synthesize_stream,  # streaming variant
+    "clip_audio":        handle_clip_audio,
+    "probe_duration":    handle_probe_duration,
 }
+
+# Handlers that manage their own stdout output (streaming)
+STREAMING_HANDLERS = {"synthesize_stream"}
 
 
 # ─── Main loop ────────────────────────────────────────────────────────────────
@@ -306,6 +536,21 @@ def main() -> None:
         handler = HANDLERS.get(req_type)
         if handler is None:
             resp = {"id": req_id, "success": False, "error": f"Unknown request type: {req_type!r}"}
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+        elif req_type in STREAMING_HANDLERS:
+            # Streaming handlers write their own JSON lines; pass req_id explicitly
+            try:
+                handler(req_id, payload)
+            except Exception as exc:
+                resp = {
+                    "id": req_id,
+                    "success": False,
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+                sys.stdout.write(json.dumps(resp) + "\n")
+                sys.stdout.flush()
         else:
             try:
                 data = handler(payload)
@@ -317,9 +562,8 @@ def main() -> None:
                     "error": str(exc),
                     "traceback": traceback.format_exc(),
                 }
-
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":

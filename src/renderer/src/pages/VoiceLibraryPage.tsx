@@ -375,7 +375,7 @@ function TestVoicePanel({ voice, modelReady }: TestVoicePanelProps) {
       audioRef.current.pause()
       audioRef.current = null
     }
-    const audio = new Audio(`file://${audioPath}`)
+    const audio = new Audio(`vbfile://localhost${audioPath}`)
     audioRef.current = audio
     audio.onended = () => setPlaying(false)
     audio.onerror = () => { setPlaying(false); setError('Playback failed.') }

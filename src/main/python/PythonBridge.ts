@@ -22,6 +22,22 @@ interface JsonResponse {
   error?: string
 }
 
+interface StreamingResponse {
+  id: string
+  streaming: true
+  done: boolean
+  data?: unknown
+  error?: string
+}
+
+interface PendingStreamingRequest {
+  processName: PythonScriptName
+  onChunk: (data: unknown) => void
+  resolve: () => void
+  reject: (err: Error) => void
+  timeout: ReturnType<typeof setTimeout>
+}
+
 const MAX_RETRIES = 3
 const REQUEST_TIMEOUT_MS = 120_000
 
@@ -43,6 +59,7 @@ interface QueuedSend {
 export class PythonBridge extends EventEmitter {
   private processes: Map<PythonScriptName, ChildProcess> = new Map()
   private pending: Map<string, PendingRequest> = new Map()
+  private pendingStreaming: Map<string, PendingStreamingRequest> = new Map()
   private retries: Map<PythonScriptName, number> = new Map()
   private restarting: Set<PythonScriptName> = new Set()
   /** True once the process has emitted {startup:'ready'} on stdout */
@@ -120,7 +137,11 @@ export class PythonBridge extends EventEmitter {
           }
           return // startup messages are not request responses — don't pass to handleResponse
         }
-        this.handleResponse(parsed)
+        if ('streaming' in parsed) {
+          this.handleStreamingResponse(parsed as unknown as StreamingResponse)
+        } else {
+          this.handleResponse(parsed)
+        }
       } catch {
         // Non-JSON output from Python (e.g., debug prints) — ignore
       }
@@ -148,6 +169,14 @@ export class PythonBridge extends EventEmitter {
         pending.reject(new Error(`Python process '${name}' exited unexpectedly (code ${code})`))
         clearTimeout(pending.timeout)
         this.pending.delete(id)
+      }
+
+      // Reject any in-flight streaming requests for this process
+      for (const [id, pending] of this.pendingStreaming) {
+        if (pending.processName !== name) continue
+        pending.reject(new Error(`Python process '${name}' exited unexpectedly (code ${code})`))
+        clearTimeout(pending.timeout)
+        this.pendingStreaming.delete(id)
       }
 
       // Auto-restart if not intentionally killed
@@ -181,6 +210,26 @@ export class PythonBridge extends EventEmitter {
       pending.resolve(response.data)
     } else {
       pending.reject(new Error(response.error ?? 'Unknown Python error'))
+    }
+  }
+
+  private handleStreamingResponse(response: StreamingResponse): void {
+    const pending = this.pendingStreaming.get(response.id)
+    if (!pending) return
+
+    if (response.error) {
+      clearTimeout(pending.timeout)
+      this.pendingStreaming.delete(response.id)
+      pending.reject(new Error(response.error))
+      return
+    }
+
+    if (!response.done) {
+      pending.onChunk(response.data)
+    } else {
+      clearTimeout(pending.timeout)
+      this.pendingStreaming.delete(response.id)
+      pending.resolve()
     }
   }
 
@@ -225,6 +274,66 @@ export class PythonBridge extends EventEmitter {
           if (err) {
             clearTimeout(timeout)
             this.pending.delete(id)
+            reject(err)
+          }
+        })
+      }
+
+      if (this.processReady.get(name)) {
+        doWrite()
+      } else {
+        const queue = this.startupQueue.get(name) ?? []
+        queue.push({ doWrite, reject })
+        this.startupQueue.set(name, queue)
+      }
+    })
+  }
+
+  /**
+   * Send a streaming request to a Python process.
+   * `onChunk` is called for each intermediate JSON chunk as they arrive.
+   * Resolves when Python sends the terminal `{"done": true}` frame.
+   */
+  sendStreaming(
+    name: PythonScriptName,
+    type: string,
+    payload: unknown,
+    onChunk: (data: unknown) => void
+  ): Promise<void> {
+    const proc = this.processes.get(name)
+    if (!proc || !proc.stdin?.writable) {
+      return Promise.reject(new Error(`Python process '${name}' is not running`))
+    }
+
+    const id = randomUUID()
+    const message = JSON.stringify({ id, type, payload }) + '\n'
+
+    return new Promise<void>((resolve, reject) => {
+      const doWrite = () => {
+        const currentProc = this.processes.get(name)
+        if (!currentProc?.stdin?.writable) {
+          reject(new Error(`Python process '${name}' is not running`))
+          return
+        }
+
+        const timeoutMs = PROCESS_TIMEOUT_MS[name] ?? REQUEST_TIMEOUT_MS
+        const timeout = setTimeout(() => {
+          this.pendingStreaming.delete(id)
+          reject(new Error(`Python streaming request '${type}' timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+
+        this.pendingStreaming.set(id, {
+          processName: name,
+          onChunk,
+          resolve,
+          reject,
+          timeout
+        })
+
+        currentProc.stdin!.write(message, (err) => {
+          if (err) {
+            clearTimeout(timeout)
+            this.pendingStreaming.delete(id)
             reject(err)
           }
         })

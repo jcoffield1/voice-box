@@ -177,6 +177,50 @@ export class TTSCloningService extends EventEmitter {
     }
   }
 
+  /**
+   * Synthesize `text` in the given voice, streaming sentence-by-sentence.
+   * `onChunk` is called with the WAV path of each sentence as it completes,
+   * so you can start playback before the full utterance is generated.
+   */
+  async synthesizeStreaming(
+    voiceId: string,
+    text: string,
+    onChunk: (audioPath: string) => void
+  ): Promise<void> {
+    if (this._modelStatus !== 'ready') {
+      throw new Error('F5-TTS model is not downloaded. Download it first.')
+    }
+
+    this.ensureTtsBridgeRunning()
+
+    const voice = this.ttsVoiceRepo.findById(voiceId)
+    if (!voice) throw new Error(`Voice not found: ${voiceId}`)
+
+    const outDir = this.getSamplesDir('synth-output')
+
+    const sample = this.ttsVoiceRepo.findLatestSample(voiceId) ?? null
+
+    const payload: Record<string, unknown> = { text, output_dir: outDir }
+    if (sample) {
+      payload.reference_audio = sample.audioPath
+      payload.reference_transcript = sample.transcript ?? ''
+    } else if (voice.voiceDesignPrompt) {
+      payload.voice_design_prompt = voice.voiceDesignPrompt
+    } else {
+      throw new Error(
+        'No reference audio samples or voice design prompt found for this voice. ' +
+        'Add at least one audio sample or set a voice design description.'
+      )
+    }
+
+    await this.pythonBridge.sendStreaming('tts', 'synthesize_stream', payload, (data) => {
+      const chunk = data as { audio_path: string }
+      if (chunk?.audio_path) {
+        onChunk(chunk.audio_path)
+      }
+    })
+  }
+
   // ─── Sample management ────────────────────────────────────────────────────
 
   /**
