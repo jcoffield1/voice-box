@@ -83,7 +83,28 @@ import type {
   ImportTemplateResult,
   ExportTemplateArgs,
   TestTemplateArgs,
-  TestTemplateResult
+  TestTemplateResult,
+  GetTtsVoicesResult,
+  GetTtsVoiceArgs,
+  GetTtsVoiceResult,
+  CreateTtsVoiceArgs,
+  CreateTtsVoiceResult,
+  RenameTtsVoiceArgs,
+  RenameTtsVoiceResult,
+  DeleteTtsVoiceArgs,
+  GetTtsVoiceSamplesArgs,
+  GetTtsVoiceSamplesResult,
+  AddTtsVoiceSampleArgs,
+  AddTtsVoiceSampleResult,
+  AddTtsVoiceSampleFromRecordingArgs,
+  AddTtsVoiceSamplesFromSpeakerArgs,
+  AddTtsVoiceSamplesFromSpeakerResult,
+  DeleteTtsVoiceSampleArgs,
+  Qwen3ModelStatusResult,
+  TtsSynthesizeArgs,
+  TtsSynthesizeResult,
+  TtsDownloadProgressPayload,
+  TtsVoiceCreationProgressPayload,
 } from '../shared/ipc-types'
 import type { TranscriptSegment } from '../shared/types'
 
@@ -269,7 +290,41 @@ const api = {
     export: (args: ExportTemplateArgs) =>
       invoke<void>(IPC.template.export, args),
     test: (args: TestTemplateArgs) =>
-      invoke<TestTemplateResult>(IPC.template.test, args)  }
+      invoke<TestTemplateResult>(IPC.template.test, args)  },
+
+  // ─── TTS Voice Cloning ────────────────────────────────────────────────────
+  ttsVoice: {
+    getAll: () =>
+      invoke<GetTtsVoicesResult>(IPC.ttsVoice.getAll),
+    get: (args: GetTtsVoiceArgs) =>
+      invoke<GetTtsVoiceResult>(IPC.ttsVoice.get, args),
+    create: (args: CreateTtsVoiceArgs) =>
+      invoke<CreateTtsVoiceResult>(IPC.ttsVoice.create, args),
+    rename: (args: RenameTtsVoiceArgs) =>
+      invoke<RenameTtsVoiceResult>(IPC.ttsVoice.rename, args),
+    delete: (args: DeleteTtsVoiceArgs) =>
+      invoke<void>(IPC.ttsVoice.delete, args),
+    getSamples: (args: GetTtsVoiceSamplesArgs) =>
+      invoke<GetTtsVoiceSamplesResult>(IPC.ttsVoice.getSamples, args),
+    addSample: (args: AddTtsVoiceSampleArgs) =>
+      invoke<AddTtsVoiceSampleResult>(IPC.ttsVoice.addSample, args),
+    addSampleFromRecording: (args: AddTtsVoiceSampleFromRecordingArgs) =>
+      invoke<AddTtsVoiceSampleResult>(IPC.ttsVoice.addSampleFromRecording, args),
+    addSamplesFromSpeaker: (args: AddTtsVoiceSamplesFromSpeakerArgs) =>
+      invoke<AddTtsVoiceSamplesFromSpeakerResult>(IPC.ttsVoice.addSamplesFromSpeaker, args),
+    deleteSample: (args: DeleteTtsVoiceSampleArgs) =>
+      invoke<void>(IPC.ttsVoice.deleteSample, args),
+    modelStatus: () =>
+      invoke<Qwen3ModelStatusResult>(IPC.ttsVoice.modelStatus),
+    downloadModel: () =>
+      invoke<Qwen3ModelStatusResult>(IPC.ttsVoice.downloadModel),
+    synthesize: (args: TtsSynthesizeArgs) =>
+      invoke<TtsSynthesizeResult>(IPC.ttsVoice.synthesize, args),
+    onDownloadProgress: (cb: (payload: TtsDownloadProgressPayload) => void) =>
+      on(IPC.ttsVoice.downloadProgress, cb as (...args: unknown[]) => void),
+    onVoiceCreationProgress: (cb: (payload: TtsVoiceCreationProgressPayload) => void) =>
+      on(IPC.ttsVoice.voiceCreationProgress, cb as (...args: unknown[]) => void),
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)

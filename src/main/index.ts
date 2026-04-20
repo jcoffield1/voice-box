@@ -29,8 +29,12 @@ import { registerSettingsIpc } from './ipc/settings.ipc'
 import { registerSpeakerIpc } from './ipc/speaker.ipc'
 import { registerVoiceIpc } from './ipc/voice.ipc'
 import { SummaryTemplateRepository } from './services/storage/repositories/SummaryTemplateRepository'
+import { TtsVoiceRepository } from './services/storage/repositories/TtsVoiceRepository'
+import { TTSCloningService } from './services/audio/TTSCloningService'
 import { registerTemplateIpc } from './ipc/template.ipc'
+import { registerTtsVoiceIpc } from './ipc/tts-voice.ipc'
 import { IPC } from '@shared/ipc-types'
+import ffmpegStatic from 'ffmpeg-static'
 import type { RecordingDebriefReadyPayload } from '@shared/ipc-types'
 
 let mainWindow: BrowserWindow | null = null
@@ -150,6 +154,7 @@ function initServices(): void {
   const conversationRepo = new ConversationRepository(db)
   const settingsRepo = new SettingsRepository(db)
   const templateRepo = new SummaryTemplateRepository(db)
+  const ttsVoiceRepo = new TtsVoiceRepository(db)
 
   // LLM / Embedding
   const llmService = new LLMService(settingsRepo)
@@ -160,6 +165,10 @@ function initServices(): void {
 
   // Python processes
   pythonBridge = new PythonBridge()
+
+  // Inject the bundled ffmpeg binary path so all Python scripts use it
+  const ffmpegPath = ffmpegStatic as unknown as string | null
+  if (ffmpegPath) pythonBridge.setEnv('FFMPEG_PATH', ffmpegPath)
 
   // Load saved API keys into LLM service at startup, and inject HF token
   // into PythonBridge before any Python process that needs it is started.
@@ -184,6 +193,13 @@ function initServices(): void {
   pythonBridge.send('embed_voice', 'warmup', {}).catch((err) => {
     console.warn('[Main] embed_voice warmup failed (non-fatal):', err?.message ?? err)
   })
+  // Pre-warm the TTS bridge so F5-TTS weights are in memory before the
+  // user clicks Generate. The Python-side warmup handler is a no-op if the
+  // model snapshot hasn't been downloaded yet.
+  pythonBridge.start('tts')
+  pythonBridge.send('tts', 'warmup', {}).catch((err) => {
+    console.warn('[Main] tts warmup failed (non-fatal):', err?.message ?? err)
+  })
 
   pythonBridge.on('process:restarted', ({ name, attempt }: { name: string; attempt: number }) => {
     console.warn(`[Main] Python process '${name}' restarted (attempt ${attempt})`)
@@ -201,6 +217,8 @@ function initServices(): void {
   queue = new TranscriptionQueue(whisper, audio, transcriptRepo, recordingRepo)
   tts = new TTSService()
   voiceInput = new VoiceInputService(whisper)
+
+  const ttsCloningService = new TTSCloningService(pythonBridge, ttsVoiceRepo, recordingRepo, transcriptRepo)
 
   const speakerIdService = new SpeakerIdentificationService(pythonBridge, speakerRepo)
 
@@ -686,8 +704,9 @@ function initServices(): void {
     onHfTokenChange: (hasToken) => { hfTokenConfigured = hasToken }
   })
   registerSpeakerIpc({ speakerRepo })
-  registerVoiceIpc({ tts, voiceInput, settings: settingsRepo, getWebContents })
+  registerVoiceIpc({ tts, ttsCloningService, voiceInput, settings: settingsRepo, getWebContents })
   registerTemplateIpc({ templateRepo, recordingRepo, transcriptRepo, llm: llmService })
+  registerTtsVoiceIpc({ ttsVoiceRepo, ttsCloningService, getWebContents })
 }
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────

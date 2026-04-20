@@ -5,4 +5,9 @@ numpy>=1.26.0
 soundfile>=0.12.1
 torch>=2.0.0
 torchaudio>=2.0.0
-huggingface_hub>=1.0.0
+huggingface_hub>=0.20.0
+# Pin modern httpx/httpcore to avoid rfc3986 backtracking from old 0.15-0.17 httpcore
+httpx>=0.27.0
+httpcore>=1.0.0
+# TTS cloning — F5-TTS (flow-matching, fast on MPS/Apple Silicon)
+f5-tts

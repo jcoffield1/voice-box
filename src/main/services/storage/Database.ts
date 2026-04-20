@@ -426,6 +426,55 @@ Be thorough — this is the complete record of the conversation.',
     up: `
       ALTER TABLE recordings ADD COLUMN template_id TEXT;
     `
+  },
+  {
+    version: 15,
+    name: 'create_tts_voices',
+    up: `
+      -- Named voice profiles for TTS cloning.
+      -- Each voice has a collection of reference audio samples that the
+      -- F5-TTS model uses for zero-shot voice conditioning.
+      CREATE TABLE IF NOT EXISTS tts_voices (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        description TEXT,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tts_voices_name ON tts_voices(name);
+    `
+  },
+  {
+    version: 16,
+    name: 'create_tts_voice_samples',
+    up: `
+      -- Reference audio samples attached to a tts_voice.
+      -- audio_path: absolute path to a WAV/MP3 clip (3–30 s of clean speech).
+      -- transcript: optional verbatim text of what is spoken — improves conditioning.
+      -- source_recording_id: non-null when the clip was clipped from an existing
+      --   VoiceBox recording rather than imported from external file.
+      CREATE TABLE IF NOT EXISTS tts_voice_samples (
+        id                   TEXT PRIMARY KEY,
+        voice_id             TEXT NOT NULL REFERENCES tts_voices(id) ON DELETE CASCADE,
+        audio_path           TEXT NOT NULL,
+        transcript           TEXT,
+        duration_sec         REAL,
+        source_recording_id  TEXT REFERENCES recordings(id) ON DELETE SET NULL,
+        created_at           INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_tts_samples_voice
+        ON tts_voice_samples(voice_id, created_at DESC);
+    `
+  },
+  {
+    version: 17,
+    name: 'add_voice_design_prompt',
+    up: `
+      -- Optional text description used by the F5-TTS voice-design synthesis path.
+      -- When a voice has no reference audio samples, this prompt is passed to
+      -- generate_voice_clone(voice_design_prompt=...) as a natural-language voice spec.
+      ALTER TABLE tts_voices ADD COLUMN voice_design_prompt TEXT;
+    `
   }
 ]
 

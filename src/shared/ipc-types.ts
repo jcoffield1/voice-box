@@ -15,6 +15,10 @@ import type {
   LLMProviderType,
   LLMFeature,
   SummaryTemplate,
+  TtsVoice,
+  TtsVoiceSample,
+  TtsEngine,
+  Qwen3ModelStatus,
 } from './types'
 
 // ─── Recording IPC ───────────────────────────────────────────────────────────
@@ -395,6 +399,25 @@ export const IPC = {
     import:  'template:import',
     export:  'template:export',
     test:    'template:test',
+  },
+  ttsVoice: {
+    getAll:          'ttsVoice:getAll',
+    get:             'ttsVoice:get',
+    create:          'ttsVoice:create',
+    rename:          'ttsVoice:rename',
+    delete:          'ttsVoice:delete',
+    getSamples:      'ttsVoice:getSamples',
+    addSample:       'ttsVoice:addSample',
+    addSampleFromRecording: 'ttsVoice:addSampleFromRecording',
+    addSamplesFromSpeaker:  'ttsVoice:addSamplesFromSpeaker',
+    deleteSample:    'ttsVoice:deleteSample',
+    modelStatus:     'ttsVoice:modelStatus',
+    downloadModel:   'ttsVoice:downloadModel',
+    synthesize:      'ttsVoice:synthesize',
+    // Event: download progress pushed from main → renderer
+    downloadProgress: 'ttsVoice:downloadProgress',
+    // Event: sample extraction progress for a voice being created from speaker
+    voiceCreationProgress: 'ttsVoice:voiceCreationProgress',
   }
 } as const
 
@@ -545,6 +568,127 @@ export interface TestTemplateResult {
   result: string
   model: string
   provider: string
+}
+
+// ─── TTS Voice Cloning IPC ───────────────────────────────────────────────────
+
+export interface GetTtsVoicesResult {
+  voices: TtsVoice[]
+}
+
+export interface GetTtsVoiceArgs {
+  voiceId: string
+}
+
+export interface GetTtsVoiceResult {
+  voice: TtsVoice | null
+}
+
+export interface CreateTtsVoiceArgs {
+  name: string
+  description?: string
+  /** Natural-language voice design prompt (alternative to reference audio). */
+  voiceDesignPrompt?: string
+}
+
+export interface CreateTtsVoiceResult {
+  voice: TtsVoice
+}
+
+export interface RenameTtsVoiceArgs {
+  voiceId: string
+  name: string
+  description?: string
+  /** Natural-language voice design prompt. Pass empty string to clear. */
+  voiceDesignPrompt?: string
+}
+
+export interface RenameTtsVoiceResult {
+  voice: TtsVoice | null
+}
+
+export interface DeleteTtsVoiceArgs {
+  voiceId: string
+}
+
+export interface GetTtsVoiceSamplesArgs {
+  voiceId: string
+}
+
+export interface GetTtsVoiceSamplesResult {
+  samples: TtsVoiceSample[]
+}
+
+/** Import an external audio file (opens file dialog if filePath is omitted). */
+export interface AddTtsVoiceSampleArgs {
+  voiceId: string
+  /** If provided, skip the file dialog and use this path directly. */
+  filePath?: string
+  transcript?: string
+}
+
+export interface AddTtsVoiceSampleResult {
+  sample: TtsVoiceSample
+}
+
+/** Clip audio from an existing VoiceBox recording as a training sample. */
+export interface AddTtsVoiceSampleFromRecordingArgs {
+  voiceId: string
+  recordingId: string
+  /** Clip window within the recording (seconds). Omit to use auto-selected best segment. */
+  startSec?: number
+  endSec?: number
+  transcript?: string
+}
+
+export interface DeleteTtsVoiceSampleArgs {
+  sampleId: string
+}
+
+/**
+ * Auto-clip the best segments attributed to a known speaker profile across all
+ * recordings and add them as TTS reference samples for the given voice.
+ */
+export interface AddTtsVoiceSamplesFromSpeakerArgs {
+  voiceId: string
+  speakerId: string
+}
+
+export interface AddTtsVoiceSamplesFromSpeakerResult {
+  /** Number of samples successfully added. */
+  addedCount: number
+  samples: TtsVoiceSample[]
+}
+
+export interface Qwen3ModelStatusResult {
+  status: Qwen3ModelStatus
+  /** Download progress 0–100, only set while status === 'downloading'. */
+  progress?: number
+}
+
+export interface TtsSynthesizeArgs {
+  text: string
+  voiceId: string
+  /** Optional: which sample to use as reference. Defaults to the most recent. */
+  sampleId?: string
+}
+
+export interface TtsSynthesizeResult {
+  /** Absolute path to the synthesized WAV file. */
+  audioPath: string
+}
+
+export interface TtsDownloadProgressPayload {
+  progress: number  // 0–100
+  status: Qwen3ModelStatus
+}
+
+export interface TtsVoiceCreationProgressPayload {
+  voiceId: string
+  percent: number   // 0–100
+  message: string
+  done: boolean
+  error?: string
 }
 
 // Derive union types

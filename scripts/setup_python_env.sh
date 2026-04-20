@@ -129,7 +129,7 @@ echo "  Upgrading pip …"
 "$VENV_PYTHON" -m pip install --upgrade pip --quiet
 
 echo "  Installing requirements …"
-"$VENV_PYTHON" -m pip install -r "$REQUIREMENTS"
+"$VENV_PYTHON" -m pip install --upgrade-strategy only-if-needed -r "$REQUIREMENTS"
 
 ok "All dependencies installed"
 

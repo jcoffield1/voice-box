@@ -8,6 +8,7 @@ import SettingsPage from './pages/SettingsPage'
 import SpeakersPage from './pages/SpeakersPage'
 import GlobalChatPage from './pages/GlobalChatPage'
 import TemplatesPage from './pages/TemplatesPage'
+import VoiceLibraryPage from './pages/VoiceLibraryPage'
 import OnboardingModal from './components/layout/OnboardingModal'
 import HuggingFaceSetupGate from './components/layout/HuggingFaceSetupGate'
 import LLMSetupGate from './components/layout/LLMSetupGate'
@@ -32,6 +33,7 @@ export default function App() {
                 <Route path="chat" element={<GlobalChatPage />} />
                 <Route path="speakers" element={<SpeakersPage />} />
                 <Route path="templates" element={<TemplatesPage />} />
+                <Route path="voices" element={<VoiceLibraryPage />} />
                 <Route path="settings" element={<SettingsPage />} />
               </Route>
             </Routes>

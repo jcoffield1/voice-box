@@ -356,4 +356,29 @@ export class TranscriptRepository {
       .get(recordingId)
     return row?.c ?? 0
   }
+
+  /**
+   * Find all segments attributed to a named speaker profile across all recordings.
+   * Returns only segments with a resolved (non-raw) speakerId, ordered by recording
+   * then timestamp so callers can group them into contiguous clips.
+   *
+   * Joins recordings to provide the audio path needed for clipping.
+   */
+  findBySpeakerId(speakerId: string): Array<TranscriptSegment & { recordingAudioPath: string | null }> {
+    type JoinRow = SegmentRow & { recording_audio_path: string | null }
+    const rows = this.db
+      .prepare<string, JoinRow>(
+        `SELECT ts.*, r.audio_path AS recording_audio_path
+         FROM transcript_segments ts
+         JOIN recordings r ON r.id = ts.recording_id
+         WHERE ts.speaker_id = ?
+           AND ts.speaker_id NOT LIKE 'SPEAKER_%'
+         ORDER BY ts.recording_id, ts.timestamp_start ASC`
+      )
+      .all(speakerId)
+    return rows.map((row) => ({
+      ...rowToSegment(row),
+      recordingAudioPath: row.recording_audio_path,
+    }))
+  }
 }

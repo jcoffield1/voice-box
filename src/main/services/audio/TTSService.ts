@@ -49,6 +49,35 @@ export class TTSService {
   }
 
   /**
+   * Play an audio file (WAV/MP3/etc.) using afplay.
+   * Kills any in-progress speech first.
+   */
+  playFile(filePath: string): Promise<void> {
+    this.stop()
+
+    return new Promise((resolve, reject) => {
+      this.currentProcess = spawn('afplay', [filePath])
+      this.speaking = true
+
+      this.currentProcess.on('close', (code) => {
+        this.speaking = false
+        this.currentProcess = null
+        if (code === 0 || code === null) {
+          resolve()
+        } else {
+          reject(new Error(`afplay exited with code ${code}`))
+        }
+      })
+
+      this.currentProcess.on('error', (err) => {
+        this.speaking = false
+        this.currentProcess = null
+        reject(err)
+      })
+    })
+  }
+
+  /**
    * Stop any in-progress speech immediately.
    */
   stop(): void {

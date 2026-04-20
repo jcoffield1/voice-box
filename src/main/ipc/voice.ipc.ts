@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import { IPC } from '@shared/ipc-types'
 import type { SpeakArgs, VoiceInputStartResult, VoiceInputStopResult, ListVoicesResult, MacOSVoice } from '@shared/ipc-types'
 import type { TTSService } from '../services/audio/TTSService'
+import type { TTSCloningService } from '../services/audio/TTSCloningService'
 import type { VoiceInputService } from '../services/audio/VoiceInputService'
 import type { WebContents } from 'electron'
 import type { SettingsRepository } from '../services/storage/repositories/SettingsRepository'
@@ -9,6 +10,7 @@ import { execFile } from 'child_process'
 
 interface VoiceIpcDeps {
   tts: TTSService
+  ttsCloningService: TTSCloningService
   voiceInput: VoiceInputService
   settings: SettingsRepository
   getWebContents: () => WebContents | null
@@ -45,13 +47,30 @@ function listSystemVoices(): Promise<MacOSVoice[]> {
 }
 
 export function registerVoiceIpc(deps: VoiceIpcDeps): void {
-  const { tts, voiceInput, settings, getWebContents } = deps
+  const { tts, ttsCloningService, voiceInput, settings, getWebContents } = deps
 
   // ─── TTS (voice output) ──────────────────────────────────────────────────
 
   ipcMain.handle(IPC.ai.speak, async (_event, args: SpeakArgs): Promise<void> => {
     const { text, rate } = args
-    // args.voice takes precedence (e.g. preview calls); fall back to DB-stored setting
+    const engine = (settings.get('tts.engine') as string | null) ?? 'macos'
+
+    if (engine === 'qwen3') {
+      const customVoiceId = (settings.get('tts.customVoiceId') as string | null) || null
+      if (customVoiceId) {
+        try {
+          const audioPath = await ttsCloningService.synthesize(customVoiceId, text)
+          // Play the resulting WAV via the macOS TTSService audio player
+          await tts.playFile(audioPath)
+        } catch (err) {
+          console.error('[TTS/Qwen3] synthesis error:', err)
+        }
+        return
+      }
+      // Fall through to macOS if no voice is configured
+    }
+
+    // macOS path
     const dbVoice = (settings.get('tts.voice') as string | null) ?? undefined
     const resolvedVoice = args.voice || dbVoice || undefined
     const configuredRate = settings.get('tts.rate') ? Number(settings.get('tts.rate')) : undefined

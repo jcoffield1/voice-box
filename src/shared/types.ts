@@ -200,3 +200,40 @@ export interface VoiceEmbeddingResult {
   embedding: number[]
   speakerId: string
 }
+
+// ─── TTS Voice Cloning ────────────────────────────────────────────────────────
+
+/** A named voice profile used by the F5-TTS cloning engine. */
+export interface TtsVoice {
+  id: string
+  name: string
+  description: string | null
+  /**
+   * Optional natural-language voice design prompt.
+   * When set and the voice has no reference audio samples, the F5-TTS model
+   * synthesises using this text description instead of reference audio.
+   * Example: "A warm, slightly husky male voice with a slight British accent."
+   */
+  voiceDesignPrompt: string | null
+  sampleCount: number
+  createdAt: number
+  updatedAt: number
+}
+
+/** A single reference audio clip attached to a TtsVoice. */
+export interface TtsVoiceSample {
+  id: string
+  voiceId: string
+  audioPath: string
+  transcript: string | null
+  durationSec: number | null
+  /** Non-null when the clip was exported from an existing VoiceBox recording. */
+  sourceRecordingId: string | null
+  createdAt: number
+}
+
+/** Which TTS engine to use for AI voice output. */
+export type TtsEngine = 'macos' | 'qwen3'
+
+/** Status of the F5-TTS model download. */
+export type Qwen3ModelStatus = 'not_downloaded' | 'downloading' | 'ready' | 'error'

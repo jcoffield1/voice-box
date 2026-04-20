@@ -6,7 +6,7 @@ import { existsSync } from 'fs'
 import { app } from 'electron'
 import { createInterface } from 'readline'
 
-export type PythonScriptName = 'transcribe' | 'diarize' | 'embed_voice'
+export type PythonScriptName = 'transcribe' | 'diarize' | 'embed_voice' | 'tts'
 
 interface PendingRequest {
   processName: PythonScriptName
@@ -27,9 +27,12 @@ const REQUEST_TIMEOUT_MS = 120_000
 
 /** Per-process overrides for requests that are known to be slow.
  *  Diarization runs a full neural speaker-separation pipeline on CPU/MPS and
- *  can take 3–8 minutes for longer recordings — 2 minutes is far too short. */
+ *  can take 3–8 minutes for longer recordings — 2 minutes is far too short.
+ *  TTS cold-start loads ~3.4 GB of weights; first synthesis adds another
+ *  1–3 minutes on CPU — give 15 minutes total. */
 const PROCESS_TIMEOUT_MS: Partial<Record<PythonScriptName, number>> = {
-  diarize: 600_000, // 10 minutes
+  diarize: 600_000,  // 10 minutes
+  tts: 900_000,      // 15 minutes (cold-start weight load + first inference)
 }
 
 interface QueuedSend {
