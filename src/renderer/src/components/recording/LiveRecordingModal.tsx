@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Mic, Square, Monitor, X, UserPlus, User, Loader2 } from 'lucide-react'
+import { Mic, Square, Monitor, X, UserPlus, User, Loader2, Pause, Play } from 'lucide-react'
 import { useRecordingStore } from '../../store/recordingStore'
 import { useSettingsStore } from '../../store/settingsStore'
 import { useTranscriptStore } from '../../store/transcriptStore'
@@ -41,8 +41,8 @@ export default function LiveRecordingModal({ onClose }: Props) {
   const navigate = useNavigate()
 
   const {
-    isRecording, audioLevel, activeRecordingId,
-    liveSegments, startRecording, stopRecording, updateLiveSegment
+    isRecording, isPaused, audioLevel, activeRecordingId,
+    liveSegments, startRecording, stopRecording, pauseRecording, resumeRecording, updateLiveSegment
   } = useRecordingStore()
   const { selectedInputDeviceId, audioDevices } = useSettingsStore()
   const micPreviewLevel = useMicPreview(selectedInputDeviceId, !isRecording && !starting)
@@ -63,9 +63,10 @@ export default function LiveRecordingModal({ onClose }: Props) {
   // Elapsed timer
   useEffect(() => {
     if (!isRecording) { setElapsedSeconds(0); return }
+    if (isPaused) return
     const interval = setInterval(() => setElapsedSeconds((s) => s + 1), 1000)
     return () => clearInterval(interval)
-  }, [isRecording])
+  }, [isRecording, isPaused])
 
   // Auto-scroll transcript to bottom as new segments arrive
   useEffect(() => {
@@ -145,15 +146,15 @@ export default function LiveRecordingModal({ onClose }: Props) {
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700 shrink-0">
           {isRecording ? (
             <div className="flex items-center gap-3 flex-1 min-w-0">
-              <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+              <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${isPaused ? 'bg-amber-400' : 'bg-red-500 animate-pulse'}`} />
               <span className="text-sm font-medium text-zinc-200 truncate">
-                {title.trim() || 'Recording…'}
+                {isPaused ? 'Paused' : (title.trim() || 'Recording…')}
               </span>
               <span className="text-xs font-mono text-zinc-400 tabular-nums shrink-0">
                 {formatElapsed(elapsedSeconds)}
               </span>
               <div className="ml-1 flex-1 max-w-[120px]">
-                <AudioLevelBar level={audioLevel} />
+                <AudioLevelBar level={isPaused ? 0 : audioLevel} />
               </div>
             </div>
           ) : (
@@ -162,16 +163,28 @@ export default function LiveRecordingModal({ onClose }: Props) {
 
           <div className="flex items-center gap-2 shrink-0 ml-4">
             {isRecording && (
-              <button
-                className="btn-danger py-1.5 px-3 text-xs flex items-center gap-1.5"
-                onClick={handleStop}
-                disabled={stopping}
-              >
-                {stopping
-                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  : <Square className="w-3.5 h-3.5" />}
-                {stopping ? 'Stopping…' : 'Stop'}
-              </button>
+              <>
+                <button
+                  className="btn-ghost py-1.5 px-3 text-xs flex items-center gap-1.5"
+                  onClick={() => { void (isPaused ? resumeRecording() : pauseRecording()) }}
+                  disabled={stopping}
+                  title={isPaused ? 'Resume recording' : 'Pause recording'}
+                >
+                  {isPaused
+                    ? <><Play className="w-3.5 h-3.5" /> Resume</>
+                    : <><Pause className="w-3.5 h-3.5" /> Pause</>}
+                </button>
+                <button
+                  className="btn-danger py-1.5 px-3 text-xs flex items-center gap-1.5"
+                  onClick={handleStop}
+                  disabled={stopping}
+                >
+                  {stopping
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Square className="w-3.5 h-3.5" />}
+                  {stopping ? 'Stopping…' : 'Stop'}
+                </button>
+              </>
             )}
             {!isRecording && (
               <button className="btn-ghost p-1.5" onClick={onClose} title="Cancel">

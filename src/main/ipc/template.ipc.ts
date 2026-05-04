@@ -173,10 +173,18 @@ export function registerTemplateIpc(deps: TemplateIpcDeps): void {
       .replace(/\{\{title\}\}/g, recording.title)
       .replace(/\{\{transcript\}\}/g, transcriptText)
 
-    const response = await llm.complete(args.provider, {
+    const model = (args.model || '').trim()
+    if (!model) {
+      throw new Error(
+        `No model selected for ${args.provider}. Configure a summarization model in Settings before testing.`
+      )
+    }
+
+    const provider = llm.getProvider(args.provider)
+    const response = await provider.complete({
       systemPrompt: args.systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
-      model: args.model || undefined
+      model
     })
 
     return { result: response.text, model: response.model, provider: response.provider }

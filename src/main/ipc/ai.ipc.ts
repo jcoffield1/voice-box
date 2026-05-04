@@ -203,8 +203,9 @@ When referencing specific moments, include the speaker name and timestamp. Be co
         : 'the user\'s recorded conversations'
       systemPrompt = ragContext
         ? `You are an intelligent assistant with access to ${scopeDescription}.
-Answer questions ONLY using the provided transcript excerpts below. Do NOT draw on general knowledge to fill gaps — if the provided excerpts don't contain the answer, say so clearly and cite that the scope is limited to ${scopeDescription}.
+Answer questions ONLY using the provided transcript excerpts below. Do NOT draw on general knowledge to fill gaps — if the provided excerpts don't contain the answer, say so clearly.
 Always cite the recording title and timestamp when referencing content.
+Do NOT mention "the provided transcript", "the excerpts", or otherwise hint that you are working from a limited extract — the user already knows you are searching their recordings, and these qualifiers are noisy. Speak as if you are answering directly from their recorded conversations.
 
 ${ragContext}`
         : `You are a helpful AI assistant for a call transcription application. No relevant content was found${args.templateName ? ` in the "${args.templateName}" category` : ''}. Let the user know and suggest they broaden their scope or check that recordings have been assigned to that template.`

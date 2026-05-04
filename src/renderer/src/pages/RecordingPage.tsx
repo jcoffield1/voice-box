@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import {
-  ArrowLeft, Pencil, Check, X, Download, FileText, Tag, StickyNote, Maximize2, Minimize2, Loader2, LayoutTemplate
+  ArrowLeft, Pencil, Check, X, Download, FileText, Tag, StickyNote, Maximize2, Minimize2, Loader2, LayoutTemplate, RefreshCw
 } from 'lucide-react'
 import type { SummaryTemplate } from '@shared/types'
 import TranscriptView from '../components/transcript/TranscriptView'
@@ -189,6 +189,8 @@ export default function RecordingPage() {
             const next = e.target.value || null
             setTemplateId(next)
             if (!id) return
+            // Main process auto-regenerates the debrief when templateId changes
+            // and pushes the new debrief via the debriefReady event.
             const { recording: updated } = await window.api.recording.update({ recordingId: id, templateId: next })
             if (updated) updateRecording(updated)
           }}
@@ -197,6 +199,17 @@ export default function RecordingPage() {
             <option key={t.id} value={t.id}>{t.name}</option>
           ))}
         </select>
+        <button
+          className="btn-ghost p-1.5 shrink-0 disabled:opacity-40"
+          onClick={() => {
+            if (!id || isGeneratingDebrief) return
+            void window.api.recording.regenerateDebrief({ recordingId: id }).catch(() => {})
+          }}
+          disabled={!id || isGeneratingDebrief || recording?.status !== 'complete'}
+          title="Regenerate summary using the current template"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isGeneratingDebrief ? 'animate-spin' : ''}`} />
+        </button>
       </div>
       {recording?.debrief ? (
         <div className="selectable text-sm text-zinc-300 leading-relaxed [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-zinc-100 [&_h1]:mt-4 [&_h1]:mb-1 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-zinc-100 [&_h2]:mt-4 [&_h2]:mb-1 [&_h3]:text-sm [&_h3]:font-medium [&_h3]:text-zinc-200 [&_h3]:mt-3 [&_h3]:mb-1 [&_p]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:mb-2 [&_li]:mb-0.5 [&_strong]:text-zinc-100 [&_strong]:font-semibold [&_table]:w-full [&_table]:text-xs [&_table]:border-collapse [&_th]:text-left [&_th]:text-zinc-400 [&_th]:pb-1 [&_th]:border-b [&_th]:border-surface-600 [&_td]:py-1 [&_td]:pr-4 [&_td]:border-b [&_td]:border-surface-700 [&_hr]:border-surface-600 [&_hr]:my-3 [&_blockquote]:border-l-2 [&_blockquote]:border-accent [&_blockquote]:pl-3 [&_blockquote]:text-zinc-400">

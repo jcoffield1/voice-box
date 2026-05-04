@@ -202,6 +202,44 @@ export class TranscriptRepository {
   }
 
   /**
+   * Return all segments that are eligible for automatic re-identification —
+   * i.e. anything NOT manually assigned by the user.  Manual assignments are
+   * identified by `speaker_id IS NOT NULL AND speaker_id NOT LIKE 'SPEAKER_%'
+   * AND speaker_confidence IS NULL`.  Everything else (NULL speaker, raw
+   * SPEAKER_XX label, or auto-assigned with a confidence score) is fair game
+   * for the highest-match sweep.
+   */
+  findReevaluableSegments(
+    recordingId: string
+  ): Array<{ id: string; timestampStart: number; timestampEnd: number; currentConfidence: number | null }> {
+    type Row = {
+      id: string
+      timestamp_start: number
+      timestamp_end: number
+      speaker_confidence: number | null
+    }
+    return (this.db
+      .prepare<string, Row>(
+        `SELECT id, timestamp_start, timestamp_end, speaker_confidence
+         FROM transcript_segments
+         WHERE recording_id = ?
+           AND NOT (
+             speaker_id IS NOT NULL
+             AND speaker_id NOT LIKE 'SPEAKER_%'
+             AND speaker_confidence IS NULL
+           )
+         ORDER BY timestamp_start ASC`
+      )
+      .all(recordingId) as Row[])
+      .map((r) => ({
+        id: r.id,
+        timestampStart: r.timestamp_start,
+        timestampEnd: r.timestamp_end,
+        currentConfidence: r.speaker_confidence
+      }))
+  }
+
+  /**
    * Return speakers that were manually confirmed during live recording (non-SPEAKER_XX, non-null
    * speaker_id), grouped by profileId with their time ranges.  Used after recording stops to
    * learn voice embeddings that couldn't be created while the audio file was still open.

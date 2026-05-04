@@ -5,6 +5,7 @@ interface RecordingState {
   // Active recording
   activeRecordingId: string | null
   isRecording: boolean
+  isPaused: boolean
   audioLevel: number
   liveSegments: TranscriptSegment[]
 
@@ -35,12 +36,15 @@ interface RecordingState {
   // Async thunks
   startRecording: (title: string, config: AudioCaptureConfig) => Promise<void>
   stopRecording: () => Promise<void>
+  pauseRecording: () => Promise<void>
+  resumeRecording: () => Promise<void>
   loadRecordings: () => Promise<void>
 }
 
 export const useRecordingStore = create<RecordingState>((set, get) => ({
   activeRecordingId: null,
   isRecording: false,
+  isPaused: false,
   audioLevel: 0,
   liveSegments: [],
   recordings: [],
@@ -90,8 +94,22 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     const id = get().activeRecordingId
     if (!id) return
     await window.api.recording.stop({ recordingId: id })
-    set({ isRecording: false, activeRecordingId: null, postProcessingRecordingId: id })
+    set({ isRecording: false, isPaused: false, activeRecordingId: null, postProcessingRecordingId: id })
     await get().loadRecordings()
+  },
+
+  pauseRecording: async () => {
+    const id = get().activeRecordingId
+    if (!id || !get().isRecording || get().isPaused) return
+    await window.api.recording.pause({ recordingId: id })
+    set({ isPaused: true, audioLevel: 0 })
+  },
+
+  resumeRecording: async () => {
+    const id = get().activeRecordingId
+    if (!id || !get().isRecording || !get().isPaused) return
+    await window.api.recording.resume({ recordingId: id })
+    set({ isPaused: false })
   },
 
   loadRecordings: async () => {

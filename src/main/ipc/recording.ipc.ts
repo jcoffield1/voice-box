@@ -11,6 +11,8 @@ import type {
   StartRecordingResult,
   StopRecordingArgs,
   StopRecordingResult,
+  PauseRecordingArgs,
+  ResumeRecordingArgs,
   GetRecordingsResult,
   GetRecordingArgs,
   GetRecordingResult,
@@ -18,6 +20,7 @@ import type {
   DeleteRecordingArgs,
   ImportAudioArgs,
   ImportAudioResult,
+  RegenerateDebriefArgs,
   ExportTranscriptArgs,
   ExportTranscriptResult,
   ExportSummaryArgs,
@@ -38,6 +41,7 @@ interface RecordingIpcDeps {
   whisper: WhisperService
   getWebContents: () => WebContents | null
   triggerPostRecordingPipeline: (recordingId: string) => void
+  regenerateDebrief: (recordingId: string) => void
 }
 
 function formatTime(seconds: number): string {
@@ -47,7 +51,7 @@ function formatTime(seconds: number): string {
 }
 
 export function registerRecordingIpc(deps: RecordingIpcDeps): void {
-  const { recordingRepo, transcriptRepo, audio, queue, whisper, getWebContents, triggerPostRecordingPipeline } = deps
+  const { recordingRepo, transcriptRepo, audio, queue, whisper, getWebContents, triggerPostRecordingPipeline, regenerateDebrief } = deps
 
   // Register once — not inside the start handler, to avoid accumulating listeners
   queue.on('segment', (segment) => {
@@ -106,6 +110,14 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     return { recordingId: args.recordingId, duration: recording?.duration ?? 0 }
   })
 
+  ipcMain.handle(IPC.recording.pause, async (_event, _args: PauseRecordingArgs): Promise<void> => {
+    audio.pause()
+  })
+
+  ipcMain.handle(IPC.recording.resume, async (_event, _args: ResumeRecordingArgs): Promise<void> => {
+    audio.resume()
+  })
+
   ipcMain.handle(IPC.recording.getAll, async (): Promise<GetRecordingsResult> => {
     return { recordings: recordingRepo.findAll() }
   })
@@ -115,13 +127,26 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
   })
 
   ipcMain.handle(IPC.recording.update, async (_event, args: UpdateRecordingArgs): Promise<GetRecordingResult> => {
-    const recording = recordingRepo.update(args.recordingId, {
+    const existing = recordingRepo.findById(args.recordingId)
+    const templateChanged =
+      'templateId' in args && existing != null && existing.templateId !== args.templateId
+    let recording = recordingRepo.update(args.recordingId, {
       title: args.title,
       notes: args.notes,
       tags: args.tags,
       ...('templateId' in args ? { templateId: args.templateId } : {})
     })
+    if (templateChanged && recording) {
+      regenerateDebrief(recording.id)
+      // regenerateDebrief clears debrief in the DB synchronously; re-read so
+      // the renderer doesn't briefly resurrect the stale debrief text.
+      recording = recordingRepo.findById(recording.id) ?? recording
+    }
     return { recording }
+  })
+
+  ipcMain.handle(IPC.recording.regenerateDebrief, async (_event, args: RegenerateDebriefArgs): Promise<void> => {
+    regenerateDebrief(args.recordingId)
   })
 
   ipcMain.handle(IPC.recording.delete, async (_event, args: DeleteRecordingArgs): Promise<void> => {

@@ -76,6 +76,18 @@ export interface RecordingDebriefReadyPayload {
   debrief: string
 }
 
+export interface RegenerateDebriefArgs {
+  recordingId: string
+}
+
+export interface PauseRecordingArgs {
+  recordingId: string
+}
+
+export interface ResumeRecordingArgs {
+  recordingId: string
+}
+
 // ─── Transcript IPC ──────────────────────────────────────────────────────────
 
 export interface GetTranscriptArgs {
@@ -310,12 +322,16 @@ export const IPC = {
   recording: {
     start: 'recording:start',
     stop: 'recording:stop',
+    pause: 'recording:pause',
+    resume: 'recording:resume',
     getAll: 'recording:getAll',
     get: 'recording:get',
     update: 'recording:update',
     delete: 'recording:delete',
     export: 'recording:export',
     exportSummary: 'recording:exportSummary',
+    // Trigger regeneration of an existing recording's debrief (e.g. after template change)
+    regenerateDebrief: 'recording:regenerateDebrief',
     // Event pushed from main → renderer when auto-debrief is ready
     debriefReady: 'recording:debriefReady',
     // Event pushed from main → renderer when the full post-recording pipeline finishes

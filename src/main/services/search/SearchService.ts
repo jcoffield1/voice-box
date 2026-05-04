@@ -77,7 +77,8 @@ export class SearchService {
   }
 
   private keywordSearch(query: SearchQuery, limit: number): SearchResult[] {
-    const ftsQuery = query.query.replace(/['"*]/g, '') // Sanitize FTS query
+    const ftsQuery = this.buildFtsMatchExpression(query.query)
+    if (!ftsQuery) return []
     const rows = this.db
       .prepare<[string, number], FtsRow>(
         `SELECT ts.id, ts.recording_id, ts.text, ts.speaker_name,
@@ -94,6 +95,39 @@ export class SearchService {
     return rows
       .map((r) => this.rowToResult(r, -r.rank / 10, 'keyword'))
       .filter((r) => this.matchesFilters(r, query))
+  }
+
+  /**
+   * Convert a free-text query into an FTS5 MATCH expression. FTS5 defaults to
+   * AND semantics across tokens, so passing a full question like "what
+   * conversations have been centered around electron?" requires every word to
+   * co-occur in a single segment — which never happens. We drop common stop
+   * words and OR the remaining content tokens so any segment that mentions a
+   * meaningful term still surfaces. Tokens shorter than 3 chars are dropped to
+   * avoid noise; if everything is filtered out we fall back to OR-ing all
+   * non-stop tokens regardless of length.
+   */
+  private buildFtsMatchExpression(raw: string): string {
+    const STOP_WORDS = new Set([
+      'a','an','and','any','are','around','as','at','be','been','being','but','by','can',
+      'centered','could','did','do','does','doing','for','from','had','has','have','having',
+      'he','her','here','him','his','how','i','if','in','into','is','it','its','just','like',
+      'me','my','no','not','of','on','or','our','out','over','please','should','so','some',
+      'such','than','that','the','their','them','then','there','these','they','this','those',
+      'to','too','under','up','was','we','were','what','when','where','which','while','who',
+      'why','will','with','would','you','your'
+    ])
+    const cleaned = raw.replace(/['"*():^]/g, ' ')
+    const tokens = cleaned
+      .toLowerCase()
+      .split(/\s+/)
+      .map((t) => t.replace(/[^a-z0-9]+/g, ''))
+      .filter(Boolean)
+    let content = tokens.filter((t) => t.length >= 3 && !STOP_WORDS.has(t))
+    if (content.length === 0) content = tokens.filter((t) => !STOP_WORDS.has(t))
+    if (content.length === 0) return ''
+    // Quote each token defensively in case it collides with FTS5 keywords.
+    return content.map((t) => `"${t}"`).join(' OR ')
   }
 
   private resolveSegment(segmentId: string, score: number, type: SearchResult['matchType']): SearchResult | null {
@@ -139,7 +173,22 @@ export class SearchService {
 
   /** Search recordings whose notes or tags contain any query term; returns one representative segment per match. */
   private notesAndTagsSearch(query: SearchQuery, limit: number): SearchResult[] {
-    const terms = query.query.replace(/['"][*]/g, '').trim().split(/\s+/).filter(Boolean)
+    const STOP_WORDS = new Set([
+      'a','an','and','any','are','around','as','at','be','been','being','but','by','can',
+      'centered','could','did','do','does','doing','for','from','had','has','have','having',
+      'he','her','here','him','his','how','i','if','in','into','is','it','its','just','like',
+      'me','my','no','not','of','on','or','our','out','over','please','should','so','some',
+      'such','than','that','the','their','them','then','there','these','they','this','those',
+      'to','too','under','up','was','we','were','what','when','where','which','while','who',
+      'why','will','with','would','you','your'
+    ])
+    const allTerms = query.query
+      .toLowerCase()
+      .replace(/['"*]/g, '')
+      .split(/\s+/)
+      .map((t) => t.replace(/[^a-z0-9]+/g, ''))
+      .filter(Boolean)
+    const terms = allTerms.filter((t) => t.length >= 3 && !STOP_WORDS.has(t))
     if (terms.length === 0) return []
 
     const notesConds = terms.map(() => 'LOWER(r.notes) LIKE ?').join(' OR ')

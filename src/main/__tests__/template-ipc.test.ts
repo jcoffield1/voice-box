@@ -263,7 +263,7 @@ describe('registerTemplateIpc', () => {
       templateRepo: deps.templateRepo,
       recordingRepo: recordingRepo as never,
       transcriptRepo: transcriptRepo as never,
-      llm: llm as never
+      llm: { getProvider: vi.fn(() => llm) } as never
     })
     await expect(
       fullHandlers[IPC.template.test](evt, {
@@ -285,8 +285,11 @@ describe('registerTemplateIpc', () => {
         { timestampStart: 5, speakerName: 'Alice', text: 'Hello there' }
       ])
     }
-    const llm = {
+    const provider = {
       complete: vi.fn(async () => ({ text: 'Great meeting!', model: 'gpt-4o', provider: 'openai' }))
+    }
+    const llm = {
+      getProvider: vi.fn(() => provider)
     }
     vi.mocked(ipcMain.handle).mockReset()
     const fullHandlers = captureHandlers()
@@ -303,10 +306,11 @@ describe('registerTemplateIpc', () => {
       model: 'gpt-4o',
       provider: 'openai'
     })
-    expect(llm.complete).toHaveBeenCalledWith(
-      'openai',
+    expect(llm.getProvider).toHaveBeenCalledWith('openai')
+    expect(provider.complete).toHaveBeenCalledWith(
       expect.objectContaining({
         systemPrompt: 'You are a helpful assistant.',
+        model: 'gpt-4o',
         messages: [
           expect.objectContaining({
             content: expect.stringContaining('My Meeting')

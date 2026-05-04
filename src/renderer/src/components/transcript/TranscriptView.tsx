@@ -1,11 +1,11 @@
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useMemo, useState } from 'react'
 import { useTranscript } from '../../hooks/useTranscript'
 import { useTranscriptStore } from '../../store/transcriptStore'
 import { useRecordingStore } from '../../store/recordingStore'
 import TranscriptSegmentRow from './TranscriptSegmentRow'
 import SpeakerLabelModal from './SpeakerLabelModal'
 import type { TranscriptSegment } from '@shared/types'
-import { Loader2, AlertTriangle, Eye, EyeOff } from 'lucide-react'
+import { Loader2, AlertTriangle, Eye, EyeOff, Search, ChevronUp, ChevronDown, X as XIcon } from 'lucide-react'
 
 const LOW_CONFIDENCE_THRESHOLD = 0.7
 
@@ -36,6 +36,8 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
 
   const [assignTarget, setAssignTarget] = useState<TranscriptSegment | null>(null)
   const [reviewMode, setReviewMode] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchIdx, setSearchIdx] = useState(0)
   const diarizationError = useRecordingStore((s) => s.diarizationError)
   const setDiarizationError = useRecordingStore((s) => s.setDiarizationError)
   const postProcessingRecordingId = useRecordingStore((s) => s.postProcessingRecordingId)
@@ -95,6 +97,37 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
     (seg) => seg.speakerConfidence !== null && seg.speakerConfidence < LOW_CONFIDENCE_THRESHOLD
   )
   const shownSegments = reviewMode ? lowConfidenceSegments : displaySegments
+
+  // ── Search: list of segment ids whose text contains the query (case-insensitive) ──
+  const trimmedQuery = searchQuery.trim()
+  const matchIds = useMemo(() => {
+    if (!trimmedQuery) return [] as string[]
+    const needle = trimmedQuery.toLowerCase()
+    return shownSegments.filter((s) => s.text.toLowerCase().includes(needle)).map((s) => s.id)
+  }, [trimmedQuery, shownSegments])
+
+  // Reset cursor when the query or visible set changes
+  useEffect(() => {
+    setSearchIdx(0)
+  }, [trimmedQuery])
+  // Clamp cursor if matches shrink (e.g. switching to review mode)
+  useEffect(() => {
+    if (matchIds.length === 0) return
+    if (searchIdx >= matchIds.length) setSearchIdx(0)
+  }, [matchIds.length, searchIdx])
+
+  // Scroll the active match into view whenever it changes
+  const activeMatchId = matchIds[searchIdx] ?? null
+  useEffect(() => {
+    if (!activeMatchId) return
+    const el = segmentRefs.current[activeMatchId]
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [activeMatchId])
+
+  const gotoMatch = (delta: 1 | -1): void => {
+    if (matchIds.length === 0) return
+    setSearchIdx((i) => (i + delta + matchIds.length) % matchIds.length)
+  }
 
   if (loading && !isLive) {
     return (
@@ -170,6 +203,60 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
         </div>
       )}
 
+      {/* Search bar */}
+      {!isLive && displaySegments.length > 0 && (
+        <div className="sticky top-0 z-10 flex items-center gap-2 px-2 py-1.5 rounded-lg bg-surface-800/95 backdrop-blur border border-surface-600 shadow-sm">
+          <Search className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                gotoMatch(e.shiftKey ? -1 : 1)
+              } else if (e.key === 'Escape') {
+                setSearchQuery('')
+              }
+            }}
+            placeholder="Search transcript…"
+            className="flex-1 bg-transparent text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none"
+          />
+          <span className="text-xs text-zinc-500 tabular-nums shrink-0">
+            {trimmedQuery
+              ? matchIds.length === 0
+                ? 'No matches'
+                : `${searchIdx + 1} / ${matchIds.length}`
+              : ''}
+          </span>
+          <button
+            className="btn-ghost p-1 disabled:opacity-30"
+            onClick={() => gotoMatch(-1)}
+            disabled={matchIds.length === 0}
+            title="Previous match (Shift+Enter)"
+          >
+            <ChevronUp className="w-3.5 h-3.5" />
+          </button>
+          <button
+            className="btn-ghost p-1 disabled:opacity-30"
+            onClick={() => gotoMatch(1)}
+            disabled={matchIds.length === 0}
+            title="Next match (Enter)"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+          {searchQuery && (
+            <button
+              className="btn-ghost p-1"
+              onClick={() => setSearchQuery('')}
+              title="Clear search"
+            >
+              <XIcon className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="card flex-1 overflow-y-auto space-y-1 selectable">
         {reviewMode && shownSegments.length === 0 && (
           <p className="text-xs text-zinc-500 text-center py-8">No uncertain segments found.</p>
@@ -189,6 +276,8 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
               onLabelSpeaker={() => setAssignTarget(seg)}
               playbackSeconds={!isLive ? playbackSeconds : undefined}
               onSeek={!isLive ? onSeek : undefined}
+              highlightQuery={trimmedQuery || undefined}
+              isCurrentMatch={seg.id === activeMatchId}
             />
           </div>
         ))}

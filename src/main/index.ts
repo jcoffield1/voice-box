@@ -487,6 +487,57 @@ function initServices(): void {
     })()
   })
 
+  async function generateDebrief(recordingId: string): Promise<void> {
+    const recording = recordingRepo.findById(recordingId)
+    if (!recording) return
+    try {
+      const segments = transcriptRepo.findByRecordingId(recordingId)
+      if (segments.length === 0) return
+
+      const transcript = segments
+        .map((s) => {
+          const m = Math.floor(s.timestampStart / 60)
+          const sec = String(Math.floor(s.timestampStart % 60)).padStart(2, '0')
+          const speaker = s.speakerName ?? 'Unknown'
+          return `[${m}:${sec}] ${speaker}: ${s.text}`
+        })
+        .join('\n')
+
+      const template =
+        (recording.templateId ? templateRepo.findById(recording.templateId) : null) ??
+        templateRepo.findDefault()
+      if (!template) {
+        console.warn('[Debrief] No summary template available; skipping')
+        return
+      }
+
+      const userMessage = template.userPromptTemplate
+        .replace('{{title}}', recording.title)
+        .replace('{{transcript}}', transcript)
+
+      const response = await llmService.complete('summarization', {
+        systemPrompt: template.systemPrompt,
+        messages: [{ role: 'user', content: userMessage }]
+      })
+
+      recordingRepo.update(recordingId, { debrief: response.text, debriefAt: Date.now() })
+
+      const payload: RecordingDebriefReadyPayload = { recordingId, debrief: response.text }
+      mainWindow?.webContents.send(IPC.recording.debriefReady, payload)
+    } catch (err) {
+      console.error('[Debrief] Failed to generate debrief:', (err as Error).message)
+    }
+  }
+
+  function regenerateDebrief(recordingId: string): void {
+    // Clear existing debrief so renderer shows loading state immediately
+    recordingRepo.update(recordingId, { debrief: null, debriefAt: null })
+    const cleared: RecordingDebriefReadyPayload = { recordingId, debrief: '' }
+    mainWindow?.webContents.send(IPC.recording.debriefReady, cleared)
+    // Fire and forget — UI will be notified via debriefReady when complete.
+    void generateDebrief(recordingId)
+  }
+
   // After recording completes: run diarization then auto-generate debrief
   async function runPostRecordingPipeline(recordingId: string): Promise<void> {
     const recording = recordingRepo.findById(recordingId)
@@ -580,26 +631,35 @@ function initServices(): void {
       // ── Post-recording null-segment sweep ────────────────────────────────
       // Always runs after learnSpeaker + diarization (success or failure) so
       // that any segments skipped by the live-ID gate get a final assignment
-      // pass using the full audio file.  Combining all null-segment timestamps
-      // into a single identifyFromAudio call gives Resemblyzer more audio to
-      // work with, producing higher-confidence matches than individual short
-      // snippets.
+      // pass using the full audio file.  We score each segment INDIVIDUALLY
+      // (via identifyBatch) rather than concatenating them, because lumping
+      // all null segments into a single identifyFromAudio call produces an
+      // *aggregate* confidence that gets stamped onto every segment — and
+      // that aggregate score doesn't reflect per-segment truth (e.g. a clip
+      // that actually sounds like Jon can end up labeled "Tony @ 91%" simply
+      // because Tony dominated the aggregate).  Per-segment scores keep the
+      // displayed confidence honest and let the later highest-match sweep
+      // upgrade or correct assignments based on real evidence.
       try {
         const nullSegs = transcriptRepo.findNullSpeakerSegments(recordingId)
         if (nullSegs.length > 0 && speakerRepo.findWithEmbeddings().length > 0) {
-          // Identify against all null segments at once (better embedding quality)
-          const timeRanges = nullSegs.map((s) => ({ start: s.timestampStart, end: s.timestampEnd }))
-          const candidates = await speakerIdService.identifyFromAudio(recording.audioPath, timeRanges)
-          const best = candidates[0]
-          if (best && best.confidence >= SPEAKER_ID_CONFIDENCE_THRESHOLD) {
-            let swept = 0
-            for (const seg of nullSegs) {
-              transcriptRepo.assignSpeakerToSegmentWithConfidence(
-                seg.id, best.speakerId, best.speakerName, best.confidence
-              )
-              swept++
-            }
-            console.log(`[SpeakerID] Post-recording sweep: ${swept} null segment(s) → "${best.speakerName}" (${Math.round(best.confidence * 100)}%)`)
+          const clusters = nullSegs.map((s) => ({
+            id: s.id,
+            segments: [{ start: s.timestampStart, end: s.timestampEnd }]
+          }))
+          const resultsMap = await speakerIdService.identifyBatch(recording.audioPath, clusters)
+          let swept = 0
+          for (const seg of nullSegs) {
+            const candidates = resultsMap.get(seg.id) ?? []
+            const best = candidates[0]
+            if (!best || best.confidence < SPEAKER_ID_CONFIDENCE_THRESHOLD) continue
+            transcriptRepo.assignSpeakerToSegmentWithConfidence(
+              seg.id, best.speakerId, best.speakerName, best.confidence
+            )
+            swept++
+          }
+          if (swept > 0) {
+            console.log(`[SpeakerID] Post-recording sweep: ${swept}/${nullSegs.length} null segment(s) assigned per-segment`)
             const updated = transcriptRepo.findByRecordingId(recordingId)
             mainWindow?.webContents.send(IPC.transcript.speakersSwept, { recordingId, segments: updated })
           }
@@ -607,42 +667,55 @@ function initServices(): void {
       } catch (sweepErr) {
         console.warn('[SpeakerID] Post-recording null-segment sweep failed:', (sweepErr as Error).message)
       }
+
+      // ── Final highest-match sweep ────────────────────────────────────────
+      // Re-evaluates every non-manual segment individually against the now-
+      // finalized voice embeddings and assigns whichever speaker scores
+      // highest (provided it clears the confidence threshold).  This corrects
+      // earlier auto-assignments where a different speaker was a stronger
+      // match — e.g. a live-ID call that picked Ed Donner at 78% when Jon
+      // would have scored 86% had the embedding been fully trained.
+      // Manual assignments (speaker_confidence IS NULL on a real profile id)
+      // are excluded so user choices are never overwritten.
+      try {
+        if (speakerRepo.findWithEmbeddings().length > 0) {
+          const reevaluable = transcriptRepo.findReevaluableSegments(recordingId)
+          if (reevaluable.length > 0) {
+            const clusters = reevaluable.map((s) => ({
+              id: s.id,
+              segments: [{ start: s.timestampStart, end: s.timestampEnd }]
+            }))
+            const resultsMap = await speakerIdService.identifyBatch(recording.audioPath, clusters)
+            let updated = 0
+            for (const seg of reevaluable) {
+              const candidates = resultsMap.get(seg.id) ?? []
+              const best = candidates[0]
+              if (!best || best.confidence < SPEAKER_ID_CONFIDENCE_THRESHOLD) continue
+              // Only overwrite an existing auto-assignment if the new match
+              // is strictly higher confidence — never downgrade.
+              if (
+                seg.currentConfidence != null &&
+                best.confidence <= seg.currentConfidence
+              ) continue
+              transcriptRepo.assignSpeakerToSegmentWithConfidence(
+                seg.id, best.speakerId, best.speakerName, best.confidence
+              )
+              updated++
+            }
+            if (updated > 0) {
+              console.log(`[SpeakerID] Highest-match sweep: ${updated}/${reevaluable.length} segment(s) re-assigned`)
+              const segs = transcriptRepo.findByRecordingId(recordingId)
+              mainWindow?.webContents.send(IPC.transcript.speakersSwept, { recordingId, segments: segs })
+            }
+          }
+        }
+      } catch (bestErr) {
+        console.warn('[SpeakerID] Highest-match sweep failed:', (bestErr as Error).message)
+      }
     }
 
     // ── Debrief generation ────────────────────────────────────────────────────
-    try {
-      const segments = transcriptRepo.findByRecordingId(recordingId)
-      if (segments.length > 0) {
-        const transcript = segments
-          .map((s) => {
-            const m = Math.floor(s.timestampStart / 60)
-            const sec = String(Math.floor(s.timestampStart % 60)).padStart(2, '0')
-            const speaker = s.speakerName ?? 'Unknown'
-            return `[${m}:${sec}] ${speaker}: ${s.text}`
-          })
-          .join('\n')
-
-        const template =
-          (recording.templateId ? templateRepo.findById(recording.templateId) : null) ??
-          templateRepo.findDefault()
-
-        const userMessage = template.userPromptTemplate
-          .replace('{{title}}', recording.title)
-          .replace('{{transcript}}', transcript)
-
-        const response = await llmService.complete('summarization', {
-          systemPrompt: template.systemPrompt,
-          messages: [{ role: 'user', content: userMessage }]
-        })
-
-        recordingRepo.update(recordingId, { debrief: response.text, debriefAt: Date.now() })
-
-        const payload: RecordingDebriefReadyPayload = { recordingId, debrief: response.text }
-        mainWindow?.webContents.send(IPC.recording.debriefReady, payload)
-      }
-    } catch (err) {
-      console.error('[Debrief] Failed to generate debrief:', (err as Error).message)
-    }
+    await generateDebrief(recordingId)
 
     // Signal that the full post-recording pipeline is done — always fires so
     // the renderer clears the "Analyzing recording…" banner regardless of
@@ -672,7 +745,8 @@ function initServices(): void {
     queue,
     whisper,
     getWebContents,
-    triggerPostRecordingPipeline: (recordingId) => void runPostRecordingPipeline(recordingId)
+    triggerPostRecordingPipeline: (recordingId) => void runPostRecordingPipeline(recordingId),
+    regenerateDebrief
   })
   registerTranscriptIpc({ transcriptRepo, speakerRepo, recordingRepo, speakerIdService, getWebContents, audio })
   registerSearchIpc({ search: searchService, embeddingService })

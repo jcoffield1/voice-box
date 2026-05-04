@@ -90,7 +90,15 @@ export class OllamaProvider implements LLMProvider {
         }
       })
     })
-    if (!res.ok) throw new Error(`Ollama chat failed: ${res.status}`)
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      if (res.status === 404) {
+        throw new Error(
+          `Ollama model "${request.model}" not found (404). Pull it first: \`ollama pull ${request.model}\`.`
+        )
+      }
+      throw new Error(`Ollama chat failed: ${res.status}${body ? ` — ${body}` : ''}`)
+    }
     const data = (await res.json()) as OllamaChatResponse
     return {
       text: data.message.content,

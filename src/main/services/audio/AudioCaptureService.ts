@@ -113,6 +113,10 @@ export class AudioCaptureService extends EventEmitter {
       })
 
       this.inputStream!.on('data', (chunk: Buffer) => {
+        // While paused, drop incoming PCM so the output WAV and live transcript
+        // both skip over the silence.  This keeps timestamps continuous because
+        // segmentOffset advances per-chunk only when we emit.
+        if (this.state !== 'recording') return
         const audioChunk: AudioChunk = {
           data: chunk,
           sampleRate: config.sampleRate,
@@ -157,6 +161,32 @@ export class AudioCaptureService extends EventEmitter {
     }
 
     this.setState('idle')
+  }
+
+  /**
+   * Pause an in-progress recording.  The PortAudio stream stays open but we
+   * drop incoming PCM so silence isn't appended to the buffer and Whisper
+   * isn't fed empty audio (which causes hallucinations like "Thanks for
+   * watching!" or just numbers).  Call resume() to continue.
+   */
+  pause(): void {
+    if (this.state !== 'recording') return
+    if (this.levelInterval) {
+      clearInterval(this.levelInterval)
+      this.levelInterval = null
+    }
+    this.setState('paused')
+    // Make sure the VU meter doesn't sit at the last level forever
+    this.emit('level', 0)
+  }
+
+  /** Resume a previously paused recording. */
+  resume(): void {
+    if (this.state !== 'paused') return
+    this.setState('recording')
+    if (!this.portAudio) {
+      this.startLevelSimulation()
+    }
   }
 
   private setState(state: AudioCaptureState): void {

@@ -12,6 +12,9 @@ import type {
   DeleteRecordingArgs,
   ImportAudioArgs,
   ImportAudioResult,
+  RegenerateDebriefArgs,
+  PauseRecordingArgs,
+  ResumeRecordingArgs,
   ExportTranscriptArgs,
   ExportTranscriptResult,
   ExportSummaryArgs,
@@ -106,6 +109,10 @@ const api = {
       invoke<StartRecordingResult>(IPC.recording.start, args),
     stop: (args: StopRecordingArgs) =>
       invoke<StopRecordingResult>(IPC.recording.stop, args),
+    pause: (args: PauseRecordingArgs) =>
+      invoke<void>(IPC.recording.pause, args),
+    resume: (args: ResumeRecordingArgs) =>
+      invoke<void>(IPC.recording.resume, args),
     getAll: () =>
       invoke<GetRecordingsResult>(IPC.recording.getAll),
     get: (args: GetRecordingArgs) =>
@@ -120,6 +127,8 @@ const api = {
       invoke<ExportTranscriptResult>(IPC.recording.export, args),
     exportSummary: (args: ExportSummaryArgs) =>
       invoke<ExportSummaryResult>(IPC.recording.exportSummary, args),
+    regenerateDebrief: (args: RegenerateDebriefArgs) =>
+      invoke<void>(IPC.recording.regenerateDebrief, args),
     onDebriefReady: (cb: (payload: RecordingDebriefReadyPayload) => void) =>
       on(IPC.recording.debriefReady, cb as (...args: unknown[]) => void),
     onProcessed: (cb: (payload: { recordingId: string }) => void) =>

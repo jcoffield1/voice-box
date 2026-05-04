@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import type { TranscriptSegment } from '@shared/types'
 import SpeakerBadge from './SpeakerBadge'
 import { Pencil, Check, X, UserPlus, Play } from 'lucide-react'
@@ -11,6 +11,10 @@ interface Props {
   playbackSeconds?: number
   /** Called when user clicks the play button to seek to this segment */
   onSeek?: (seconds: number) => void
+  /** When set, occurrences of this query are highlighted within the text. */
+  highlightQuery?: string
+  /** When true, render a stronger ring around this row (active search match). */
+  isCurrentMatch?: boolean
 }
 
 function formatTime(ms: number) {
@@ -20,7 +24,34 @@ function formatTime(ms: number) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
-export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playbackSeconds, onSeek }: Props) {
+function renderHighlighted(text: string, query: string | undefined): React.ReactNode {
+  const q = query?.trim()
+  if (!q) return text
+  const lower = text.toLowerCase()
+  const needle = q.toLowerCase()
+  const parts: React.ReactNode[] = []
+  let i = 0
+  while (i < text.length) {
+    const idx = lower.indexOf(needle, i)
+    if (idx === -1) {
+      parts.push(text.slice(i))
+      break
+    }
+    if (idx > i) parts.push(text.slice(i, idx))
+    parts.push(
+      <mark
+        key={`m-${idx}`}
+        className="bg-amber-400/40 text-amber-100 rounded px-0.5"
+      >
+        {text.slice(idx, idx + needle.length)}
+      </mark>
+    )
+    i = idx + needle.length
+  }
+  return parts
+}
+
+export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playbackSeconds, onSeek, highlightQuery, isCurrentMatch }: Props) {
   const [editing, setEditing] = useState(false)
   const [draftText, setDraftText] = useState(segment.text)
   const editSegment = useTranscriptStore((s) => s.editSegment)
@@ -43,7 +74,11 @@ export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playback
 
   return (
     <div className={`group flex gap-3 py-2 px-2 rounded-lg transition-colors ${
-      isActive ? 'bg-accent/10 border border-accent/20' : 'hover:bg-surface-700/50'
+      isCurrentMatch
+        ? 'bg-amber-500/15 ring-2 ring-amber-400/70'
+        : isActive
+          ? 'bg-accent/10 border border-accent/20'
+          : 'hover:bg-surface-700/50'
     }`}>
       {/* Timestamp / play button */}
       <div className="w-12 shrink-0 pt-0.5">
@@ -89,7 +124,7 @@ export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playback
           </div>
         ) : (
           <p className={`text-sm leading-relaxed ${isActive ? 'text-white' : 'text-zinc-200'}`}>
-            {segment.text}
+            {renderHighlighted(segment.text, highlightQuery)}
             {segment.isEdited && (
               <span className="ml-1 text-xs text-zinc-600">(edited)</span>
             )}

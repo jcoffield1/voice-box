@@ -5,6 +5,38 @@ import type { TranscriptRepository, CreateSegmentInput } from '../storage/reposi
 import type { RecordingRepository } from '../storage/repositories/RecordingRepository'
 
 /**
+ * Detect transcript text that is almost certainly a Whisper silence / noise
+ * hallucination rather than real speech.  Common patterns:
+ *   - Pure digits or punctuation (e.g. "10.", "1", ". . .", "♪")
+ *   - Single character (e.g. "U", "A.")
+ *   - Bracketed sound-effect annotations ("[Music]", "(silence)")
+ *   - Whisper's well-known canned phrases that surface during long silence
+ */
+function isJunkTranscript(raw: string): boolean {
+  const text = raw.trim()
+  if (!text) return true
+  // Strip punctuation/whitespace for content checks
+  const stripped = text.replace(/[\s.,!?;:'"()[\]{}\-–—…♪♫•·]/g, '')
+  // Empty after stripping = punctuation only
+  if (stripped.length === 0) return true
+  // Pure digits — "10", "1.", "2,000" all collapse to digits
+  if (/^\d+$/.test(stripped)) return true
+  // Single character (after punctuation strip)
+  if (stripped.length <= 1) return true
+  // Bracketed annotations like "[Music]" / "(silence)"
+  if (/^[[(].*[\])]$/.test(text)) return true
+  // Whisper's canonical silence/end-card hallucinations
+  const lower = text.toLowerCase()
+  const HALLUCINATIONS = [
+    'thank you', "thanks for watching", 'thanks for watching!', 'thanks!',
+    'subscribe', 'like and subscribe', 'bye', 'bye.', 'bye!', 'okay.', 'ok.',
+    'you', 'you.'
+  ]
+  if (HALLUCINATIONS.includes(lower)) return true
+  return false
+}
+
+/**
  * TranscriptionQueue — orchestrates audio capture → Whisper → DB persistence.
  *
  * Events:
@@ -68,6 +100,7 @@ export class TranscriptionQueue extends EventEmitter {
       // Also skip blank/whitespace-only text.
       if (!seg.text.trim()) continue
       if (seg.confidence < -0.7) continue
+      if (isJunkTranscript(seg.text)) continue
 
       const input: CreateSegmentInput = {
         recordingId: result.recordingId,
