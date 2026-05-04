@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import type { TranscriptSegment } from '@shared/types'
 import SpeakerBadge from './SpeakerBadge'
-import { Pencil, Check, X, UserPlus, Play } from 'lucide-react'
+import { Pencil, Check, X, UserPlus, Play, Pause, RotateCcw } from 'lucide-react'
 import { useTranscriptStore } from '../../store/transcriptStore'
 
 interface Props {
@@ -11,6 +11,12 @@ interface Props {
   playbackSeconds?: number
   /** Called when user clicks the play button to seek to this segment */
   onSeek?: (seconds: number) => void
+  /** Called when user clicks the pause button on the active segment */
+  onPause?: () => void
+  /** Called to resume playback from the current position (no seek) */
+  onResume?: () => void
+  /** Whether the underlying audio player is currently playing */
+  isAudioPlaying?: boolean
   /** When set, occurrences of this query are highlighted within the text. */
   highlightQuery?: string
   /** When true, render a stronger ring around this row (active search match). */
@@ -51,7 +57,7 @@ function renderHighlighted(text: string, query: string | undefined): React.React
   return parts
 }
 
-export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playbackSeconds, onSeek, highlightQuery, isCurrentMatch }: Props) {
+export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playbackSeconds, onSeek, onPause, onResume, isAudioPlaying, highlightQuery, isCurrentMatch }: Props) {
   const [editing, setEditing] = useState(false)
   const [draftText, setDraftText] = useState(segment.text)
   const editSegment = useTranscriptStore((s) => s.editSegment)
@@ -80,19 +86,48 @@ export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playback
           ? 'bg-accent/10 border border-accent/20'
           : 'hover:bg-surface-700/50'
     }`}>
-      {/* Timestamp / play button */}
+      {/* Timestamp / play‑pause + replay buttons */}
       <div className="w-12 shrink-0 pt-0.5">
         {onSeek ? (
-          <button
-            className="w-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-accent hover:text-accent/80"
-            onClick={() => onSeek(segment.timestampStart)}
-            title={`Play from ${formatTime(Math.round(segment.timestampStart * 1000))}`}
-          >
-            <Play className="w-3.5 h-3.5 fill-current" />
-          </button>
+          <div className={`flex items-center justify-center gap-1 transition-opacity ${
+            isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}>
+            {isActive && isAudioPlaying ? (
+              <button
+                className="text-accent hover:text-accent/80"
+                onClick={() => onPause?.()}
+                title="Pause"
+              >
+                <Pause className="w-3.5 h-3.5 fill-current" />
+              </button>
+            ) : isActive ? (
+              <button
+                className="text-accent hover:text-accent/80"
+                onClick={() => onResume?.()}
+                title="Resume"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+              </button>
+            ) : (
+              <button
+                className="text-accent hover:text-accent/80"
+                onClick={() => onSeek(segment.timestampStart)}
+                title={`Play from ${formatTime(Math.round(segment.timestampStart * 1000))}`}
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+              </button>
+            )}
+            <button
+              className="text-zinc-400 hover:text-zinc-200"
+              onClick={() => onSeek(segment.timestampStart)}
+              title="Replay from start of segment"
+            >
+              <RotateCcw className="w-3 h-3" />
+            </button>
+          </div>
         ) : null}
         <span className={`text-xs font-mono block text-center transition-all ${
-          onSeek ? 'group-hover:hidden' : ''
+          onSeek ? (isActive ? 'hidden' : 'group-hover:hidden') : ''
         } ${isActive ? 'text-accent font-semibold' : 'text-zinc-500'}`}>
           {formatTime(Math.round(segment.timestampStart * 1000))}
         </span>

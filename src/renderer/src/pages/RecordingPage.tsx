@@ -72,6 +72,25 @@ export default function RecordingPage() {
   // seekToSeconds is set when the user clicks a segment play button.
   const [playbackSeconds, setPlaybackSeconds] = useState<number | undefined>(undefined)
   const [seekToSeconds, setSeekToSeconds] = useState<number | undefined>(undefined)
+  // Incremented every time a seek is requested so the player re-fires even if
+  // the requested time is unchanged (e.g. "replay this segment" button).
+  const [seekNonce, setSeekNonce] = useState(0)
+  // Incremented to ask the AudioPlayer to pause.
+  const [pauseSignal, setPauseSignal] = useState(0)
+  // Incremented to ask the AudioPlayer to resume from its current position.
+  const [playSignal, setPlaySignal] = useState(0)
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false)
+
+  const requestSeek = useCallback((t: number) => {
+    setSeekToSeconds(t)
+    setSeekNonce((n) => n + 1)
+  }, [])
+  const requestPause = useCallback(() => {
+    setPauseSignal((n) => n + 1)
+  }, [])
+  const requestResume = useCallback(() => {
+    setPlaySignal((n) => n + 1)
+  }, [])
 
   useEffect(() => {
     setNotesDraft(recording?.notes ?? '')
@@ -247,7 +266,10 @@ export default function RecordingPage() {
         isLive={isLive}
         jumpToSeconds={jumpToMs != null ? jumpToMs / 1000 : undefined}
         playbackSeconds={playbackSeconds}
-        onSeek={(t) => setSeekToSeconds(t)}
+        onSeek={(t) => requestSeek(t)}
+        onPause={requestPause}
+        onResume={requestResume}
+        isAudioPlaying={isAudioPlaying}
       />
     </div>
   )
@@ -346,6 +368,10 @@ export default function RecordingPage() {
                 src={`vbfile://localhost${encodeURI(recording.audioPath)}`}
                 onTimeUpdate={setPlaybackSeconds}
                 seekToSeconds={seekToSeconds}
+                seekNonce={seekNonce}
+                pauseSignal={pauseSignal}
+                playSignal={playSignal}
+                onPlayingChange={setIsAudioPlaying}
               />
             </div>
           )}
@@ -543,6 +569,10 @@ export default function RecordingPage() {
               jumpToSeconds={jumpToMs != null ? jumpToMs / 1000 : undefined}
               onTimeUpdate={setPlaybackSeconds}
               seekToSeconds={seekToSeconds}
+              seekNonce={seekNonce}
+              pauseSignal={pauseSignal}
+              playSignal={playSignal}
+              onPlayingChange={setIsAudioPlaying}
             />
           )}
 

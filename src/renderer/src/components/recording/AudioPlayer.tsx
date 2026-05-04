@@ -10,6 +10,18 @@ interface Props {
   onTimeUpdate?: (seconds: number) => void
   /** Imperative seek: when this value changes the player seeks to it */
   seekToSeconds?: number
+  /**
+   * Companion counter for `seekToSeconds` that increments on every seek
+   * request, so callers can re-trigger a seek to the same time (e.g. a
+   * "replay this segment" button).
+   */
+  seekNonce?: number
+  /** Counter that, when incremented, pauses playback. */
+  pauseSignal?: number
+  /** Counter that, when incremented, resumes playback from the current position. */
+  playSignal?: number
+  /** Called whenever play/pause state changes. */
+  onPlayingChange?: (playing: boolean) => void
 }
 
 function formatTime(seconds: number) {
@@ -21,7 +33,7 @@ function formatTime(seconds: number) {
   return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
-export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSeconds }: Props) {
+export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSeconds, seekNonce, pauseSignal, playSignal, onPlayingChange }: Props) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -31,6 +43,8 @@ export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSe
   // the player is freshly mounted while seekToSeconds is already non-null (e.g.
   // when entering fullscreen after a segment play-button was clicked).
   const seekMountedRef = useRef(false)
+  const pauseMountedRef = useRef(false)
+  const playMountedRef = useRef(false)
 
   // Jump to timestamp when prop changes (from search result)
   useEffect(() => {
@@ -40,8 +54,10 @@ export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSe
   }, [jumpToSeconds])
 
   // Seek when parent requests it (from transcript play button).
-  // Skip the very first run so mounting with a stale seekToSeconds doesn't
-  // unexpectedly start playback.
+  // Depends on `seekNonce` so callers can re-trigger a seek to the same time
+  // (e.g. "replay this segment"). Falls back to `seekToSeconds` if no nonce
+  // is supplied. Skip the very first run so mounting with a stale value
+  // doesn't unexpectedly start playback.
   useEffect(() => {
     if (!seekMountedRef.current) {
       seekMountedRef.current = true
@@ -51,7 +67,31 @@ export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSe
       audioRef.current.currentTime = seekToSeconds
       void audioRef.current.play()
     }
-  }, [seekToSeconds])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekNonce ?? seekToSeconds])
+
+  // Pause when parent requests it.
+  useEffect(() => {
+    if (!pauseMountedRef.current) {
+      pauseMountedRef.current = true
+      return
+    }
+    audioRef.current?.pause()
+  }, [pauseSignal])
+
+  // Resume when parent requests it (no seek — keeps current position).
+  useEffect(() => {
+    if (!playMountedRef.current) {
+      playMountedRef.current = true
+      return
+    }
+    void audioRef.current?.play()
+  }, [playSignal])
+
+  // Notify parent of play/pause state changes.
+  useEffect(() => {
+    onPlayingChange?.(playing)
+  }, [playing, onPlayingChange])
 
   const handlePlayPause = useCallback(() => {
     const audio = audioRef.current

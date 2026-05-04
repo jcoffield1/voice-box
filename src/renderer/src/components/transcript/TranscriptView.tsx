@@ -17,9 +17,15 @@ interface Props {
   playbackSeconds?: number
   /** Called when user clicks a segment play button */
   onSeek?: (seconds: number) => void
+  /** Called when user clicks the pause button on the active segment */
+  onPause?: () => void
+  /** Called to resume playback from the current position (no seek) */
+  onResume?: () => void
+  /** Whether the AudioPlayer is currently playing */
+  isAudioPlaying?: boolean
 }
 
-export default function TranscriptView({ recordingId, isLive, jumpToSeconds, playbackSeconds, onSeek }: Props) {
+export default function TranscriptView({ recordingId, isLive, jumpToSeconds, playbackSeconds, onSeek, onPause, onResume, isAudioPlaying }: Props) {
   const { segments, loading } = useTranscript(recordingId)
   const liveSegments = useRecordingStore((s) => s.liveSegments)
   const loadTranscript = useTranscriptStore((s) => s.loadTranscript)
@@ -276,6 +282,9 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
               onLabelSpeaker={() => setAssignTarget(seg)}
               playbackSeconds={!isLive ? playbackSeconds : undefined}
               onSeek={!isLive ? onSeek : undefined}
+              onPause={!isLive ? onPause : undefined}
+              onResume={!isLive ? onResume : undefined}
+              isAudioPlaying={!isLive ? isAudioPlaying : false}
               highlightQuery={trimmedQuery || undefined}
               isCurrentMatch={seg.id === activeMatchId}
             />
