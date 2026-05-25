@@ -334,6 +334,28 @@ export class TranscriptRepository {
     return result.changes
   }
 
+  /**
+   * Clear auto-assigned speakers that are not in the allowed set.
+   * Resets speaker_id, speaker_name, and speaker_confidence to NULL so the
+   * re-identification pipeline will reassign them. Manual assignments
+   * (speaker_confidence IS NULL with a real profile id) are preserved.
+   */
+  clearSpeakersNotInSet(recordingId: string, allowedSpeakerIds: string[]): number {
+    if (allowedSpeakerIds.length === 0) return 0
+    const placeholders = allowedSpeakerIds.map(() => '?').join(', ')
+    const result = this.db
+      .prepare(
+        `UPDATE transcript_segments
+         SET speaker_id = NULL, speaker_name = NULL, speaker_confidence = NULL
+         WHERE recording_id = ?
+           AND speaker_id IS NOT NULL
+           AND speaker_id NOT IN (${placeholders})
+           AND speaker_confidence IS NOT NULL`
+      )
+      .run(recordingId, ...allowedSpeakerIds)
+    return result.changes
+  }
+
   /** Set the raw diarization label (e.g. SPEAKER_00) on a single segment. */
   setRawSpeakerId(segmentId: string, rawSpeakerId: string): void {
     this.db

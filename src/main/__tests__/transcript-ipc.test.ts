@@ -75,7 +75,8 @@ function makeDeps() {
   }
   const recordingRepo = {
     // Return a recording with no audioPath so fire-and-forget learning is skipped
-    findById: vi.fn(() => ({ id: 'rec-1', audioPath: null } as unknown as import('@shared/types').Recording))
+    findById: vi.fn(() => ({ id: 'rec-1', audioPath: null } as unknown as import('@shared/types').Recording)),
+    getExpectedSpeakerIds: vi.fn(() => [] as string[])
   }
   const speakerIdService = {
     learnSpeaker: vi.fn(async () => {}),

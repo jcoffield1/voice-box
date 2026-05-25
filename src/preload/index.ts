@@ -13,6 +13,10 @@ import type {
   ImportAudioArgs,
   ImportAudioResult,
   RegenerateDebriefArgs,
+  GetExpectedSpeakersArgs,
+  GetExpectedSpeakersResult,
+  SetExpectedSpeakersArgs,
+  SetExpectedSpeakersResult,
   PauseRecordingArgs,
   ResumeRecordingArgs,
   ExportTranscriptArgs,
@@ -67,6 +71,8 @@ import type {
   GetSpeakersResult,
   GetSpeakerArgs,
   GetSpeakerResult,
+  CreateSpeakerArgs,
+  CreateSpeakerResult,
   RenameSpeakerArgs,
   DeleteSpeakerArgs,
   MergeSpeakersArgs,
@@ -129,6 +135,10 @@ const api = {
       invoke<ExportSummaryResult>(IPC.recording.exportSummary, args),
     regenerateDebrief: (args: RegenerateDebriefArgs) =>
       invoke<void>(IPC.recording.regenerateDebrief, args),
+    getExpectedSpeakers: (args: GetExpectedSpeakersArgs) =>
+      invoke<GetExpectedSpeakersResult>(IPC.recording.getExpectedSpeakers, args),
+    setExpectedSpeakers: (args: SetExpectedSpeakersArgs) =>
+      invoke<SetExpectedSpeakersResult>(IPC.recording.setExpectedSpeakers, args),
     onDebriefReady: (cb: (payload: RecordingDebriefReadyPayload) => void) =>
       on(IPC.recording.debriefReady, cb as (...args: unknown[]) => void),
     onProcessed: (cb: (payload: { recordingId: string }) => void) =>
@@ -225,6 +235,7 @@ const api = {
   speaker: {
     getAll: () => invoke<GetSpeakersResult>(IPC.speaker.getAll),
     get: (args: GetSpeakerArgs) => invoke<GetSpeakerResult>(IPC.speaker.get, args),
+    create: (args: CreateSpeakerArgs) => invoke<CreateSpeakerResult>(IPC.speaker.create, args),
     rename: (args: RenameSpeakerArgs) => invoke<GetSpeakerResult>(IPC.speaker.rename, args),
     delete: (args: DeleteSpeakerArgs) => invoke<void>(IPC.speaker.delete, args),
     merge: (args: MergeSpeakersArgs) => invoke<void>(IPC.speaker.merge, args),

@@ -22,6 +22,10 @@ import type {
 export interface StartRecordingArgs {
   title: string
   config: AudioCaptureConfig
+  /** Speaker profile IDs expected in this recording. When non-empty, speaker
+   *  matching is constrained to only these speakers during live-ID, diarization,
+   *  and all post-recording sweeps. Empty array = match against all speakers. */
+  expectedSpeakerIds?: string[]
 }
 
 export interface StartRecordingResult {
@@ -86,6 +90,24 @@ export interface PauseRecordingArgs {
 
 export interface ResumeRecordingArgs {
   recordingId: string
+}
+
+export interface GetExpectedSpeakersArgs {
+  recordingId: string
+}
+
+export interface GetExpectedSpeakersResult {
+  speakerIds: string[]
+}
+
+export interface SetExpectedSpeakersArgs {
+  recordingId: string
+  speakerIds: string[]
+}
+
+export interface SetExpectedSpeakersResult {
+  /** Number of segments re-assigned after updating expected speakers. */
+  updatedCount: number
 }
 
 // ─── Transcript IPC ──────────────────────────────────────────────────────────
@@ -315,6 +337,14 @@ export interface ResetVoiceArgs {
   speakerId: string
 }
 
+export interface CreateSpeakerArgs {
+  name: string
+}
+
+export interface CreateSpeakerResult {
+  speaker: SpeakerProfile
+}
+
 // ─── IPC channel name map ─────────────────────────────────────────────────────
 // This is the single source of truth for all channel strings.
 
@@ -332,6 +362,9 @@ export const IPC = {
     exportSummary: 'recording:exportSummary',
     // Trigger regeneration of an existing recording's debrief (e.g. after template change)
     regenerateDebrief: 'recording:regenerateDebrief',
+    // Get/set expected speakers for speaker-constrained matching
+    getExpectedSpeakers: 'recording:getExpectedSpeakers',
+    setExpectedSpeakers: 'recording:setExpectedSpeakers',
     // Event pushed from main → renderer when auto-debrief is ready
     debriefReady: 'recording:debriefReady',
     // Event pushed from main → renderer when the full post-recording pipeline finishes
@@ -388,6 +421,7 @@ export const IPC = {
   speaker: {
     getAll: 'speaker:getAll',
     get: 'speaker:get',
+    create: 'speaker:create',
     rename: 'speaker:rename',
     delete: 'speaker:delete',
     merge: 'speaker:merge',

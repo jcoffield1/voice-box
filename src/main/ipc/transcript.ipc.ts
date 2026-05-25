@@ -57,6 +57,10 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
   }
 
   async function _doSweep(recordingId: string, audioPath: string): Promise<number> {
+    // Load expected speakers for this recording (empty = match all)
+    const expectedSpeakerIds = recordingRepo.getExpectedSpeakerIds(recordingId)
+    const speakerFilter = expectedSpeakerIds.length > 0 ? expectedSpeakerIds : undefined
+
     // ── SPEAKER_XX clusters (from diarization) ──────────────────────────────
     const unresolvedClusters = transcriptRepo.findUnresolvedSpeakerClusters(recordingId)
     const nullSegments = transcriptRepo.findNullSpeakerSegments(recordingId)
@@ -71,12 +75,12 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
         segments: c.segments.map((s) => ({ start: s.timestampStart, end: s.timestampEnd })),
       }))
 
-      const resultsMap = await speakerIdService.identifyBatch(audioPath, batchInput)
+      const resultsMap = await speakerIdService.identifyBatch(audioPath, batchInput, speakerFilter)
 
       for (const cluster of unresolvedClusters) {
         const candidates = resultsMap.get(cluster.rawLabel)
         const best = candidates?.[0]
-        if (best && best.confidence >= AUTO_APPLY_CONFIDENCE_THRESHOLD) {
+        if (best && (speakerFilter?.length || best.confidence >= AUTO_APPLY_CONFIDENCE_THRESHOLD)) {
           const n = transcriptRepo.assignSpeakerByRawIdWithConfidence(
             recordingId,
             cluster.rawLabel,
@@ -99,12 +103,12 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
         id: s.id,
         segments: [{ start: s.timestampStart, end: s.timestampEnd }],
       }))
-      const resultsMap = await speakerIdService.identifyBatch(audioPath, batchInput)
+      const resultsMap = await speakerIdService.identifyBatch(audioPath, batchInput, speakerFilter)
 
       for (const seg of nullSegments) {
         const candidates = resultsMap.get(seg.id)
         const best = candidates?.[0]
-        if (best && best.confidence >= AUTO_APPLY_CONFIDENCE_THRESHOLD) {
+        if (best && (speakerFilter?.length || best.confidence >= AUTO_APPLY_CONFIDENCE_THRESHOLD)) {
           transcriptRepo.assignSpeakerToSegmentWithConfidence(
             seg.id,
             best.speakerId,
@@ -262,6 +266,10 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
     async (_event, args: RankSpeakersArgs): Promise<RankSpeakersResult> => {
       const recording = recordingRepo.findById(args.recordingId)
 
+      // Load expected speakers for this recording
+      const expectedSpeakerIds = recordingRepo.getExpectedSpeakerIds(args.recordingId)
+      const speakerFilter = expectedSpeakerIds.length > 0 ? expectedSpeakerIds : undefined
+
       const segment = transcriptRepo.findByRecordingId(args.recordingId)
         .find((s) => s.id === args.segmentId)
       if (!segment) return { candidates: [] }
@@ -280,7 +288,7 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
         try {
           const all = await speakerIdService.identifyFromAudio(recording.audioPath, [
             { start: segment.timestampStart, end: segment.timestampEnd }
-          ])
+          ], speakerFilter)
 
           const voiceMatchIds = new Set(all.map((c) => c.speakerId))
           const extraCandidates = Array.from(confirmedInRecording.entries())

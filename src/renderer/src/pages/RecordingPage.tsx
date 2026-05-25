@@ -8,6 +8,7 @@ import type { SummaryTemplate } from '@shared/types'
 import TranscriptView from '../components/transcript/TranscriptView'
 import AIPanel from '../components/ai/AIPanel'
 import AudioPlayer from '../components/recording/AudioPlayer'
+import RecordingSpeakersBar from '../components/recording/RecordingSpeakersBar'
 import { useRecordingStore } from '../store/recordingStore'
 import DictationButton from '../components/notes/DictationButton'
 
@@ -560,6 +561,11 @@ export default function RecordingPage() {
                 recording.status === 'error' ? 'text-red-400' : 'text-zinc-400'
               }`}>{recording.status}</span>
             </div>
+          )}
+
+          {/* Expected speakers */}
+          {recording && (
+            <RecordingSpeakersBar recordingId={recording.id} />
           )}
 
           {/* Audio player — hidden when content overlay is open (overlay has its own player) */}

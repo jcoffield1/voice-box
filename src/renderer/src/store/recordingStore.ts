@@ -34,7 +34,7 @@ interface RecordingState {
   postProcessingRecordingId: string | null
 
   // Async thunks
-  startRecording: (title: string, config: AudioCaptureConfig) => Promise<void>
+  startRecording: (title: string, config: AudioCaptureConfig, expectedSpeakerIds?: string[]) => Promise<void>
   stopRecording: () => Promise<void>
   pauseRecording: () => Promise<void>
   resumeRecording: () => Promise<void>
@@ -76,10 +76,10 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     set((s) => ({ recordings: s.recordings.filter((r) => r.id !== id) })),
   setDiarizationError: (msg) => set({ diarizationError: msg }),
 
-  startRecording: async (title, config) => {
+  startRecording: async (title, config, expectedSpeakerIds) => {
     let result: Awaited<ReturnType<typeof window.api.recording.start>>
     try {
-      result = await window.api.recording.start({ title, config })
+      result = await window.api.recording.start({ title, config, expectedSpeakerIds })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       console.error('[Recording] Failed to start:', msg)

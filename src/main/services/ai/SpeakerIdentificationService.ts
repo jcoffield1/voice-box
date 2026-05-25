@@ -50,14 +50,23 @@ export class SpeakerIdentificationService {
    * Extract a voice embedding from the given time-range segments of an audio
    * file, then rank all stored speaker profiles by cosine similarity.
    *
+   * When `speakerIds` is provided and non-empty, only those speakers are
+   * considered — this dramatically improves accuracy by eliminating false
+   * positives from speakers who are not in the meeting.
+   *
    * Similarity is computed in-process (TypeScript) — no extra IPC round-trips.
    * Returns an empty array when no speaker profiles with embeddings exist yet.
    */
   async identifyFromAudio(
     audioPath: string,
-    segments: Array<{ start: number; end: number }>
+    segments: Array<{ start: number; end: number }>,
+    speakerIds?: string[]
   ): Promise<SpeakerCandidate[]> {
-    const knownSpeakers = this.speakerRepo.findWithEmbeddings()
+    let knownSpeakers = this.speakerRepo.findWithEmbeddings()
+    if (speakerIds && speakerIds.length > 0) {
+      const allowedSet = new Set(speakerIds)
+      knownSpeakers = knownSpeakers.filter((s) => allowedSet.has(s.id))
+    }
     if (knownSpeakers.length === 0) return []
 
     this.ensureRunning()
@@ -85,17 +94,25 @@ export class SpeakerIdentificationService {
    * Embed multiple speaker clusters from the same audio file in a single
    * Python IPC call, then rank stored speakers for each cluster in TypeScript.
    *
+   * When `speakerIds` is provided and non-empty, only those speakers are
+   * considered for matching.
+   *
    * Returns a map from cluster id → sorted SpeakerCandidate[].
    * Clusters that fail to embed are omitted from the result.
    */
   async identifyBatch(
     audioPath: string,
-    clusters: Array<{ id: string; segments: Array<{ start: number; end: number }> }>
+    clusters: Array<{ id: string; segments: Array<{ start: number; end: number }> }>,
+    speakerIds?: string[]
   ): Promise<Map<string, SpeakerCandidate[]>> {
     const result = new Map<string, SpeakerCandidate[]>()
     if (clusters.length === 0) return result
 
-    const knownSpeakers = this.speakerRepo.findWithEmbeddings()
+    let knownSpeakers = this.speakerRepo.findWithEmbeddings()
+    if (speakerIds && speakerIds.length > 0) {
+      const allowedSet = new Set(speakerIds)
+      knownSpeakers = knownSpeakers.filter((s) => allowedSet.has(s.id))
+    }
     if (knownSpeakers.length === 0) return result
 
     this.ensureRunning()

@@ -239,7 +239,7 @@ function initServices(): void {
     return best
   }
 
-  async function runDiarizationPipeline(recordingId: string, audioPath: string): Promise<void> {
+  async function runDiarizationPipeline(recordingId: string, audioPath: string, expectedSpeakerIds?: string[]): Promise<void> {
     console.log(`[Diarization] Starting pipeline for recording ${recordingId}`)
     console.log(`[Diarization] HF_TOKEN configured: ${hfTokenConfigured}`)
 
@@ -277,9 +277,9 @@ function initServices(): void {
 
     for (const [rawSpeakerId, timeRanges] of speakerGroups) {
       try {
-        const candidates = await speakerIdService.identifyFromAudio(audioPath, timeRanges)
+        const candidates = await speakerIdService.identifyFromAudio(audioPath, timeRanges, expectedSpeakerIds)
         const best = candidates[0]
-        if (best && best.confidence >= SPEAKER_ID_CONFIDENCE_THRESHOLD) {
+        if (best && (expectedSpeakerIds?.length || best.confidence >= SPEAKER_ID_CONFIDENCE_THRESHOLD)) {
           const updated = transcriptRepo.assignSpeakerByRawIdWithConfidence(
             recordingId,
             rawSpeakerId,
@@ -328,12 +328,21 @@ function initServices(): void {
   const LIVE_ID_PENDING_CAP = 20
   let liveIdRunning = false
   let pendingLiveSegments: Array<{ id: string; recordingId: string; timestampStart: number; timestampEnd: number }> = []
+  /** Expected speaker IDs for the active recording — loaded when a segment
+   *  arrives and cached for the duration. Empty = match all speakers. */
+  let activeRecordingExpectedSpeakers: string[] = []
 
   /** True when the identification is unambiguous — above threshold AND the winner
    *  dominates the runner-up by at least LIVE_ID_MIN_GAP. */
-  function isConfidentLiveMatch(candidates: SpeakerCandidate[]): boolean {
+  /** True when the identification is unambiguous.  When expected speakers
+   *  are set we always accept the top match (one of them *must* be speaking),
+   *  otherwise we require the winner to clear the threshold AND dominate the
+   *  runner-up by at least LIVE_ID_MIN_GAP. */
+  function isConfidentLiveMatch(candidates: SpeakerCandidate[], hasExpectedSpeakers: boolean): boolean {
     const best = candidates[0]
-    if (!best || best.confidence < LIVE_SPEAKER_ID_THRESHOLD) return false
+    if (!best) return false
+    if (hasExpectedSpeakers) return true
+    if (best.confidence < LIVE_SPEAKER_ID_THRESHOLD) return false
     const second = candidates[1]
     const gap = second ? best.confidence - second.confidence : 1.0
     return gap >= LIVE_ID_MIN_GAP
@@ -365,7 +374,7 @@ function initServices(): void {
       }))
 
       const resultsMap = await Promise.race([
-        speakerIdService.identifyBatch(snapshotPath, clusters),
+        speakerIdService.identifyBatch(snapshotPath, clusters, activeRecordingExpectedSpeakers.length > 0 ? activeRecordingExpectedSpeakers : undefined),
         new Promise<Map<string, SpeakerCandidate[]>>((resolve) =>
           // Scale timeout with number of segments: identifyBatch sends one Python
           // request but processes each cluster sequentially (~1s each). A fixed
@@ -377,7 +386,7 @@ function initServices(): void {
       for (const seg of toProcess) {
         const candidates = resultsMap.get(seg.id) ?? []
         const best = candidates[0]
-        if (isConfidentLiveMatch(candidates)) {
+        if (isConfidentLiveMatch(candidates, activeRecordingExpectedSpeakers.length > 0)) {
           transcriptRepo.assignSpeakerToSegmentWithConfidence(
             seg.id, best.speakerId, best.speakerName, best.confidence
           )
@@ -412,6 +421,11 @@ function initServices(): void {
     // Skip if no stored voice embeddings exist yet.
     if (speakerRepo.findWithEmbeddings().length === 0) return
 
+    // Load expected speakers for the active recording (cached per recording)
+    if (activeRecordingExpectedSpeakers.length === 0) {
+      activeRecordingExpectedSpeakers = recordingRepo.getExpectedSpeakerIds(segment.recordingId)
+    }
+
     const duration = segment.timestampEnd - segment.timestampStart
     if (duration <= 0) return
 
@@ -445,7 +459,7 @@ function initServices(): void {
         const candidates = await Promise.race([
           speakerIdService.identifyFromAudio(snapshotPath, [
             { start: 0, end: duration }
-          ]),
+          ], activeRecordingExpectedSpeakers.length > 0 ? activeRecordingExpectedSpeakers : undefined),
           new Promise<SpeakerCandidate[]>((resolve) =>
             setTimeout(() => resolve([]), LIVE_ID_TIMEOUT_MS)
           )
@@ -453,7 +467,7 @@ function initServices(): void {
         const best = candidates[0]
         const second = candidates[1]
         const gap = second ? best?.confidence - second.confidence : 1.0
-        if (isConfidentLiveMatch(candidates)) {
+        if (isConfidentLiveMatch(candidates, activeRecordingExpectedSpeakers.length > 0)) {
           transcriptRepo.assignSpeakerToSegmentWithConfidence(
             segment.id,
             best.speakerId,
@@ -546,6 +560,10 @@ function initServices(): void {
       return
     }
 
+    // Load expected speakers for this recording (empty = match all)
+    const expectedSpeakerIds = recordingRepo.getExpectedSpeakerIds(recordingId)
+    const speakerFilter = expectedSpeakerIds.length > 0 ? expectedSpeakerIds : undefined
+
     // ── Diarization + speaker identification ─────────────────────────────────
     if (recording.audioPath) {
       // Learn voice embeddings for speakers confirmed during live recording.
@@ -584,12 +602,12 @@ function initServices(): void {
             id: s.id,
             segments: [{ start: s.timestampStart, end: s.timestampEnd }]
           }))
-          const resultsMap = await speakerIdService.identifyBatch(recording.audioPath, clusters)
+            const resultsMap = await speakerIdService.identifyBatch(recording.audioPath, clusters, speakerFilter)
           let reswept = 0
           for (const seg of borderlineSegs) {
             const candidates = resultsMap.get(seg.id) ?? []
             const best = candidates[0]
-            if (best && best.confidence >= SPEAKER_ID_CONFIDENCE_THRESHOLD) {
+            if (best && (speakerFilter?.length || best.confidence >= SPEAKER_ID_CONFIDENCE_THRESHOLD)) {
               transcriptRepo.assignSpeakerToSegmentWithConfidence(
                 seg.id, best.speakerId, best.speakerName, best.confidence
               )
@@ -610,7 +628,7 @@ function initServices(): void {
         console.log('[Diarization] Skipping — no HuggingFace token configured')
       } else {
         try {
-          await runDiarizationPipeline(recordingId, recording.audioPath)
+          await runDiarizationPipeline(recordingId, recording.audioPath, speakerFilter)
           // Push updated segments to renderer so the UI refreshes
           mainWindow?.webContents.send('recording:diarizationComplete', { recordingId })
         } catch (err) {
@@ -647,12 +665,12 @@ function initServices(): void {
             id: s.id,
             segments: [{ start: s.timestampStart, end: s.timestampEnd }]
           }))
-          const resultsMap = await speakerIdService.identifyBatch(recording.audioPath, clusters)
+          const resultsMap = await speakerIdService.identifyBatch(recording.audioPath, clusters, speakerFilter)
           let swept = 0
           for (const seg of nullSegs) {
             const candidates = resultsMap.get(seg.id) ?? []
             const best = candidates[0]
-            if (!best || best.confidence < SPEAKER_ID_CONFIDENCE_THRESHOLD) continue
+            if (!best || (!speakerFilter?.length && best.confidence < SPEAKER_ID_CONFIDENCE_THRESHOLD)) continue
             transcriptRepo.assignSpeakerToSegmentWithConfidence(
               seg.id, best.speakerId, best.speakerName, best.confidence
             )
@@ -685,12 +703,12 @@ function initServices(): void {
               id: s.id,
               segments: [{ start: s.timestampStart, end: s.timestampEnd }]
             }))
-            const resultsMap = await speakerIdService.identifyBatch(recording.audioPath, clusters)
+            const resultsMap = await speakerIdService.identifyBatch(recording.audioPath, clusters, speakerFilter)
             let updated = 0
             for (const seg of reevaluable) {
               const candidates = resultsMap.get(seg.id) ?? []
               const best = candidates[0]
-              if (!best || best.confidence < SPEAKER_ID_CONFIDENCE_THRESHOLD) continue
+              if (!best || (!speakerFilter?.length && best.confidence < SPEAKER_ID_CONFIDENCE_THRESHOLD)) continue
               // Only overwrite an existing auto-assignment if the new match
               // is strictly higher confidence — never downgrade.
               if (
@@ -728,6 +746,7 @@ function initServices(): void {
     // They'll be fully covered by the post-recording null-segment sweep.
     pendingLiveSegments = []
     liveIdRunning = false
+    activeRecordingExpectedSpeakers = []
 
     await runPostRecordingPipeline(recordingId)
   })

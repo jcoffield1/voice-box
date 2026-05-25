@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Mic, Square, Monitor, X, UserPlus, User, Loader2, Pause, Play } from 'lucide-react'
+import { Mic, Square, Monitor, X, UserPlus, User, Loader2, Pause, Play, Plus, Users, Trash2 } from 'lucide-react'
 import { useRecordingStore } from '../../store/recordingStore'
 import { useSettingsStore } from '../../store/settingsStore'
 import { useTranscriptStore } from '../../store/transcriptStore'
 import AudioLevelBar from './AudioLevelBar'
 import { useMicPreview } from '../../hooks/useMicPreview'
 import SpeakerLabelModal from '../transcript/SpeakerLabelModal'
-import type { TranscriptSegment } from '@shared/types'
+import type { TranscriptSegment, SpeakerProfile } from '@shared/types'
 
 interface Props {
   onClose: () => void
@@ -38,6 +38,12 @@ export default function LiveRecordingModal({ onClose }: Props) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [assignTarget, setAssignTarget] = useState<TranscriptSegment | null>(null)
 
+  // Expected speakers management
+  const [allSpeakers, setAllSpeakers] = useState<SpeakerProfile[]>([])
+  const [selectedSpeakerIds, setSelectedSpeakerIds] = useState<string[]>([])
+  const [newSpeakerName, setNewSpeakerName] = useState('')
+  const [creatingSpeaker, setCreatingSpeaker] = useState(false)
+
   const navigate = useNavigate()
 
   const {
@@ -49,6 +55,11 @@ export default function LiveRecordingModal({ onClose }: Props) {
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const prevIsRecordingRef = useRef(isRecording)
+
+  // Load available speakers on mount
+  useEffect(() => {
+    window.api.speaker.getAll().then(({ speakers }) => setAllSpeakers(speakers))
+  }, [])
 
   // Close (and navigate to recording page) when recording stops externally (error / crash)
   const postProcessingRecordingId = useRecordingStore((s) => s.postProcessingRecordingId)
@@ -83,7 +94,7 @@ export default function LiveRecordingModal({ onClose }: Props) {
         channels: 1,
         inputDeviceId: selectedInputDeviceId,
         systemAudioEnabled: systemAudio
-      })
+      }, selectedSpeakerIds.length > 0 ? selectedSpeakerIds : undefined)
     } catch (e) {
       setStartError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -101,6 +112,30 @@ export default function LiveRecordingModal({ onClose }: Props) {
     }
     if (id) navigate(`/recordings/${id}`)
     onClose()
+  }
+
+  const toggleSpeaker = (speakerId: string) => {
+    setSelectedSpeakerIds((prev) =>
+      prev.includes(speakerId)
+        ? prev.filter((id) => id !== speakerId)
+        : [...prev, speakerId]
+    )
+  }
+
+  const handleCreateSpeaker = async () => {
+    const name = newSpeakerName.trim()
+    if (!name) return
+    setCreatingSpeaker(true)
+    try {
+      const { speaker } = await window.api.speaker.create({ name })
+      setAllSpeakers((prev) => [...prev, speaker])
+      setSelectedSpeakerIds((prev) => [...prev, speaker.id])
+      setNewSpeakerName('')
+    } catch (e) {
+      console.error('Failed to create speaker:', e)
+    } finally {
+      setCreatingSpeaker(false)
+    }
   }
 
   const handleAssignSave = useCallback(async ({
@@ -139,7 +174,7 @@ export default function LiveRecordingModal({ onClose }: Props) {
     >
       <div
         className={`bg-surface-800 border border-surface-600 rounded-2xl shadow-2xl flex flex-col transition-all duration-200 ${
-          isRecording ? 'w-[52rem] max-h-[80vh]' : 'w-[28rem]'
+          isRecording ? 'w-[52rem] max-h-[80vh]' : 'w-[32rem] max-h-[80vh]'
         }`}
       >
         {/* ── Header ────────────────────────────────────────────────────── */}
@@ -196,7 +231,7 @@ export default function LiveRecordingModal({ onClose }: Props) {
 
         {/* ── Setup form (pre-recording) ─────────────────────────────────── */}
         {!isRecording && (
-          <div className="px-5 py-5 space-y-4">
+          <div className="px-5 py-5 space-y-4 overflow-y-auto">
             <div className="space-y-3">
               <input
                 className="input w-full"
@@ -239,6 +274,85 @@ export default function LiveRecordingModal({ onClose }: Props) {
                 </span>
                 <span className="text-xs text-zinc-600">(requires BlackHole)</span>
               </label>
+            </div>
+
+            {/* ── Expected speakers ──────────────────────────────────────── */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Users className="w-3.5 h-3.5 text-zinc-400" />
+                <span className="text-sm text-zinc-300">Meeting participants</span>
+                <span className="text-xs text-zinc-600">(optional — improves speaker identification)</span>
+              </div>
+
+              {/* Selected speakers */}
+              {selectedSpeakerIds.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {selectedSpeakerIds.map((id) => {
+                    const sp = allSpeakers.find((s) => s.id === id)
+                    if (!sp) return null
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => toggleSpeaker(id)}
+                        className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-accent/20 text-accent border border-accent/30 hover:bg-red-500/20 hover:text-red-300 hover:border-red-500/30 transition-colors group"
+                        title={`Remove ${sp.name}`}
+                      >
+                        <User className="w-3 h-3 group-hover:hidden" />
+                        <Trash2 className="w-3 h-3 hidden group-hover:block" />
+                        {sp.name}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* Add existing speaker dropdown */}
+              {allSpeakers.filter((s) => !selectedSpeakerIds.includes(s.id)).length > 0 && (
+                <select
+                  className="input w-full text-sm"
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) toggleSpeaker(e.target.value)
+                  }}
+                >
+                  <option value="">Add a speaker…</option>
+                  {allSpeakers
+                    .filter((s) => !selectedSpeakerIds.includes(s.id))
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} {s.voiceEmbedding ? '🎤' : ''}
+                      </option>
+                    ))}
+                </select>
+              )}
+
+              {/* Create new speaker inline */}
+              <div className="flex gap-2">
+                <input
+                  className="input flex-1 text-sm"
+                  placeholder="New speaker name"
+                  value={newSpeakerName}
+                  onChange={(e) => setNewSpeakerName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newSpeakerName.trim()) {
+                      e.preventDefault()
+                      void handleCreateSpeaker()
+                    }
+                  }}
+                />
+                <button
+                  className="btn-ghost py-1.5 px-3 text-xs flex items-center gap-1"
+                  onClick={() => void handleCreateSpeaker()}
+                  disabled={!newSpeakerName.trim() || creatingSpeaker}
+                >
+                  {creatingSpeaker ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Plus className="w-3 h-3" />
+                  )}
+                  Create
+                </button>
+              </div>
             </div>
 
             {startError && (

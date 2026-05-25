@@ -4,6 +4,8 @@ import type {
   GetSpeakersResult,
   GetSpeakerArgs,
   GetSpeakerResult,
+  CreateSpeakerArgs,
+  CreateSpeakerResult,
   RenameSpeakerArgs,
   DeleteSpeakerArgs,
   MergeSpeakersArgs,
@@ -25,6 +27,11 @@ export function registerSpeakerIpc(deps: SpeakerIpcDeps): void {
 
   ipcMain.handle(IPC.speaker.get, async (_event, args: GetSpeakerArgs): Promise<GetSpeakerResult> => {
     return { speaker: speakerRepo.findById(args.speakerId) }
+  })
+
+  ipcMain.handle(IPC.speaker.create, async (_event, args: CreateSpeakerArgs): Promise<CreateSpeakerResult> => {
+    const speaker = speakerRepo.create(args.name)
+    return { speaker }
   })
 
   ipcMain.handle(IPC.speaker.rename, async (_event, args: RenameSpeakerArgs): Promise<GetSpeakerResult> => {

@@ -426,6 +426,17 @@ Be thorough — this is the complete record of the conversation.',
     up: `
       ALTER TABLE recordings ADD COLUMN template_id TEXT;
     `
+  },
+  {
+    version: 15,
+    name: 'create_recording_expected_speakers',
+    up: `
+      CREATE TABLE IF NOT EXISTS recording_expected_speakers (
+        recording_id TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        speaker_id   TEXT NOT NULL REFERENCES speaker_profiles(id) ON DELETE CASCADE,
+        PRIMARY KEY (recording_id, speaker_id)
+      );
+    `
   }
 ]
 

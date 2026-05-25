@@ -21,6 +21,10 @@ import type {
   ImportAudioArgs,
   ImportAudioResult,
   RegenerateDebriefArgs,
+  GetExpectedSpeakersArgs,
+  GetExpectedSpeakersResult,
+  SetExpectedSpeakersArgs,
+  SetExpectedSpeakersResult,
   ExportTranscriptArgs,
   ExportTranscriptResult,
   ExportSummaryArgs,
@@ -73,6 +77,12 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     }
 
     const recording = recordingRepo.create(args.title)
+
+    // Store expected speakers if provided (constrains speaker matching)
+    if (args.expectedSpeakerIds && args.expectedSpeakerIds.length > 0) {
+      recordingRepo.setExpectedSpeakers(recording.id, args.expectedSpeakerIds)
+    }
+
     audio.start(args.config)
 
     // If audio failed to start (e.g. device unavailable), clean up and surface the error.
@@ -147,6 +157,28 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
 
   ipcMain.handle(IPC.recording.regenerateDebrief, async (_event, args: RegenerateDebriefArgs): Promise<void> => {
     regenerateDebrief(args.recordingId)
+  })
+
+  ipcMain.handle(IPC.recording.getExpectedSpeakers, async (_event, args: GetExpectedSpeakersArgs): Promise<GetExpectedSpeakersResult> => {
+    return { speakerIds: recordingRepo.getExpectedSpeakerIds(args.recordingId) }
+  })
+
+  ipcMain.handle(IPC.recording.setExpectedSpeakers, async (_event, args: SetExpectedSpeakersArgs): Promise<SetExpectedSpeakersResult> => {
+    recordingRepo.setExpectedSpeakers(args.recordingId, args.speakerIds)
+    // Clear auto-assigned segments for speakers removed from the list
+    // so the pipeline can reassign them to allowed speakers only.
+    if (args.speakerIds.length > 0) {
+      const cleared = transcriptRepo.clearSpeakersNotInSet(args.recordingId, args.speakerIds)
+      if (cleared > 0) {
+        console.log(`[ExpectedSpeakers] Cleared ${cleared} segment(s) assigned to removed speakers`)
+      }
+    }
+    // Trigger a re-identification with the updated speaker constraints
+    const recording = recordingRepo.findById(args.recordingId)
+    if (recording?.audioPath) {
+      triggerPostRecordingPipeline(args.recordingId)
+    }
+    return { updatedCount: 0 }
   })
 
   ipcMain.handle(IPC.recording.delete, async (_event, args: DeleteRecordingArgs): Promise<void> => {

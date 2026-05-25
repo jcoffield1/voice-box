@@ -41,7 +41,17 @@ function rowToRecording(row: RecordingRow): Recording {
 }
 
 export class RecordingRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database) {
+    // Ensure the expected-speakers join table exists (guards against
+    // schema_version recording the migration without the table existing).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS recording_expected_speakers (
+        recording_id TEXT NOT NULL,
+        speaker_id   TEXT NOT NULL,
+        PRIMARY KEY (recording_id, speaker_id)
+      )
+    `)
+  }
 
   create(title: string): Recording {
     const id = randomUUID()
@@ -108,5 +118,31 @@ export class RecordingRepository {
       .prepare<[], { c: number }>(`SELECT COUNT(*) as c FROM recordings`)
       .get()
     return row?.c ?? 0
+  }
+
+  // ─── Expected speakers for a recording ─────────────────────────────────────
+
+  /** Store the list of expected speaker IDs for a recording.
+   *  Replaces any existing expected speakers. */
+  setExpectedSpeakers(recordingId: string, speakerIds: string[]): void {
+    this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM recording_expected_speakers WHERE recording_id = ?`).run(recordingId)
+      const insert = this.db.prepare(
+        `INSERT INTO recording_expected_speakers (recording_id, speaker_id) VALUES (?, ?)`
+      )
+      for (const id of speakerIds) {
+        insert.run(recordingId, id)
+      }
+    })()
+  }
+
+  /** Return the expected speaker IDs for a recording, or an empty array if none were set. */
+  getExpectedSpeakerIds(recordingId: string): string[] {
+    const rows = this.db
+      .prepare<string, { speaker_id: string }>(
+        `SELECT speaker_id FROM recording_expected_speakers WHERE recording_id = ?`
+      )
+      .all(recordingId)
+    return rows.map((r) => r.speaker_id)
   }
 }
