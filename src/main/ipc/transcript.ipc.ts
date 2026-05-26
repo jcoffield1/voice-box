@@ -80,7 +80,7 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
       for (const cluster of unresolvedClusters) {
         const candidates = resultsMap.get(cluster.rawLabel)
         const best = candidates?.[0]
-        if (best && (speakerFilter?.length || best.confidence >= AUTO_APPLY_CONFIDENCE_THRESHOLD)) {
+        if (best && best.confidence >= (speakerFilter?.length ? 0.55 : AUTO_APPLY_CONFIDENCE_THRESHOLD)) {
           const n = transcriptRepo.assignSpeakerByRawIdWithConfidence(
             recordingId,
             cluster.rawLabel,
@@ -108,7 +108,7 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
       for (const seg of nullSegments) {
         const candidates = resultsMap.get(seg.id)
         const best = candidates?.[0]
-        if (best && (speakerFilter?.length || best.confidence >= AUTO_APPLY_CONFIDENCE_THRESHOLD)) {
+        if (best && best.confidence >= (speakerFilter?.length ? 0.55 : AUTO_APPLY_CONFIDENCE_THRESHOLD)) {
           transcriptRepo.assignSpeakerToSegmentWithConfidence(
             seg.id,
             best.speakerId,

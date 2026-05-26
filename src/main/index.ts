@@ -279,7 +279,7 @@ function initServices(): void {
       try {
         const candidates = await speakerIdService.identifyFromAudio(audioPath, timeRanges, expectedSpeakerIds)
         const best = candidates[0]
-        if (best && (expectedSpeakerIds?.length || best.confidence >= SPEAKER_ID_CONFIDENCE_THRESHOLD)) {
+        if (best && best.confidence >= (expectedSpeakerIds?.length ? 0.55 : SPEAKER_ID_CONFIDENCE_THRESHOLD)) {
           const updated = transcriptRepo.assignSpeakerByRawIdWithConfidence(
             recordingId,
             rawSpeakerId,
@@ -334,14 +334,20 @@ function initServices(): void {
 
   /** True when the identification is unambiguous — above threshold AND the winner
    *  dominates the runner-up by at least LIVE_ID_MIN_GAP. */
-  /** True when the identification is unambiguous.  When expected speakers
-   *  are set we always accept the top match (one of them *must* be speaking),
-   *  otherwise we require the winner to clear the threshold AND dominate the
-   *  runner-up by at least LIVE_ID_MIN_GAP. */
+  /** When expected speakers are set we use relaxed thresholds (the speaker
+   *  pool is constrained, so lower confidence is acceptable), but we still
+   *  require a minimum confidence floor and gap to avoid assigning every
+   *  segment to the speaker with the strongest stored embedding. */
+  const EXPECTED_SPEAKER_MIN_CONFIDENCE = 0.55
   function isConfidentLiveMatch(candidates: SpeakerCandidate[], hasExpectedSpeakers: boolean): boolean {
     const best = candidates[0]
     if (!best) return false
-    if (hasExpectedSpeakers) return true
+    if (hasExpectedSpeakers) {
+      if (best.confidence < EXPECTED_SPEAKER_MIN_CONFIDENCE) return false
+      const second = candidates[1]
+      if (second && best.confidence - second.confidence < LIVE_ID_MIN_GAP) return false
+      return true
+    }
     if (best.confidence < LIVE_SPEAKER_ID_THRESHOLD) return false
     const second = candidates[1]
     const gap = second ? best.confidence - second.confidence : 1.0
