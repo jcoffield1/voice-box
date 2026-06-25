@@ -397,6 +397,7 @@ export default function RecordingPage() {
             <div className="shrink-0">
               <AudioPlayer
                 src={`vbfile://localhost${encodeURI(recording.audioPath)}`}
+                knownDuration={recording.duration}
                 onTimeUpdate={setPlaybackSeconds}
                 seekToSeconds={seekToSeconds}
                 seekNonce={seekNonce}
@@ -615,6 +616,7 @@ export default function RecordingPage() {
           {!isLive && recording?.audioPath && maximized !== 'content' && (
             <AudioPlayer
               src={`vbfile://localhost${encodeURI(recording.audioPath)}`}
+              knownDuration={recording.duration}
               jumpToSeconds={jumpToMs != null ? jumpToMs / 1000 : undefined}
               onTimeUpdate={setPlaybackSeconds}
               seekToSeconds={seekToSeconds}

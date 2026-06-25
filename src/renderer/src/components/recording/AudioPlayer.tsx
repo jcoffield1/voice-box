@@ -4,6 +4,8 @@ import { Play, Pause, Volume2 } from 'lucide-react'
 interface Props {
   /** vbfile:// URL pointing to the local audio file */
   src: string
+  /** Known duration in seconds (from the recording record) — shown immediately before loadedmetadata fires */
+  knownDuration?: number | null
   /** Optional: jump to this time in seconds on mount / when it changes */
   jumpToSeconds?: number
   /** Called with current playback position (seconds) on every timeupdate */
@@ -33,41 +35,85 @@ function formatTime(seconds: number) {
   return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
-export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSeconds, seekNonce, pauseSignal, playSignal, onPlayingChange }: Props) {
+export default function AudioPlayer({ src, knownDuration, jumpToSeconds, onTimeUpdate, seekToSeconds, seekNonce, pauseSignal, playSignal, onPlayingChange }: Props) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
-  const [duration, setDuration] = useState(0)
+  const [duration, setDuration] = useState(knownDuration ?? 0)
   const [volume, setVolume] = useState(1)
-  // Tracks whether this specific instance has mounted — prevents auto-play when
-  // the player is freshly mounted while seekToSeconds is already non-null (e.g.
-  // when entering fullscreen after a segment play-button was clicked).
+
+  // Tracks whether we've already set the src on the audio element.
+  // We NEVER set src until the user explicitly requests playback — this is
+  // the only reliable way to prevent Electron/Chromium from auto-playing.
+  const srcLoadedRef = useRef(false)
+
+  // Pending action to execute once the src is loaded and metadata is ready.
+  const pendingRef = useRef<{ type: 'play' } | { type: 'seek'; time: number } | null>(null)
+
+  // Mount guards for the imperative signal effects — prevent the effect from
+  // firing on the initial render when seekNonce/playSignal are already non-zero
+  // (e.g. navigating between recordings without unmounting this component).
   const seekMountedRef = useRef(false)
   const pauseMountedRef = useRef(false)
   const playMountedRef = useRef(false)
 
-  // Jump to timestamp when prop changes (from search result)
+  // Reset everything when the source URL changes (different recording).
   useEffect(() => {
-    if (jumpToSeconds != null && audioRef.current) {
-      audioRef.current.currentTime = jumpToSeconds
+    const audio = audioRef.current
+    if (!audio) return
+    audio.removeAttribute('src')
+    audio.load()
+    srcLoadedRef.current = false
+    pendingRef.current = null
+    setPlaying(false)
+    setCurrentTime(0)
+    setDuration(knownDuration ?? 0)
+    seekMountedRef.current = false
+    pauseMountedRef.current = false
+    playMountedRef.current = false
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src])
+
+  // Load src imperatively and call play/seek once metadata is ready.
+  const activate = useCallback((action: { type: 'play' } | { type: 'seek'; time: number }) => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    if (!srcLoadedRef.current) {
+      srcLoadedRef.current = true
+      pendingRef.current = action
+      audio.src = src
+      audio.load()
+      // onLoadedMetadata will fire the pending action
+    } else {
+      // src is already set — act immediately
+      if (action.type === 'seek') audio.currentTime = action.time
+      void audio.play()
     }
+  }, [src])
+
+  // Jump to timestamp when prop changes (from search result) — seeks only, no play.
+  useEffect(() => {
+    if (jumpToSeconds == null) return
+    const audio = audioRef.current
+    if (!audio) return
+    if (srcLoadedRef.current) {
+      audio.currentTime = jumpToSeconds
+    }
+    // If src isn't loaded yet, we skip — the user hasn't interacted yet and
+    // we don't want to trigger a load just for a visual seek position.
   }, [jumpToSeconds])
 
-  // Seek when parent requests it (from transcript play button).
-  // Depends on `seekNonce` so callers can re-trigger a seek to the same time
-  // (e.g. "replay this segment"). Falls back to `seekToSeconds` if no nonce
-  // is supplied. Skip the very first run so mounting with a stale value
-  // doesn't unexpectedly start playback.
+  // Seek + play when parent requests it (e.g. transcript segment play button).
   useEffect(() => {
     if (!seekMountedRef.current) {
       seekMountedRef.current = true
       return
     }
-    if (seekToSeconds != null && audioRef.current) {
-      audioRef.current.currentTime = seekToSeconds
-      void audioRef.current.play()
+    if (seekToSeconds != null) {
+      activate({ type: 'seek', time: seekToSeconds })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seekNonce ?? seekToSeconds])
 
   // Pause when parent requests it.
@@ -85,7 +131,8 @@ export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSe
       playMountedRef.current = true
       return
     }
-    void audioRef.current?.play()
+    activate({ type: 'play' })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playSignal])
 
   // Notify parent of play/pause state changes.
@@ -93,19 +140,37 @@ export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSe
     onPlayingChange?.(playing)
   }, [playing, onPlayingChange])
 
+  // Execute the pending action once metadata is available.
+  const handleLoadedMetadata = useCallback(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    // WAV files recorded without a known final size report Infinity — keep
+    // the knownDuration value already shown rather than overwriting with --:--.
+    if (isFinite(audio.duration)) setDuration(audio.duration)
+    const pending = pendingRef.current
+    if (!pending) return
+    pendingRef.current = null
+    if (pending.type === 'seek') audio.currentTime = pending.time
+    void audio.play()
+  }, [])
+
   const handlePlayPause = useCallback(() => {
     const audio = audioRef.current
     if (!audio) return
     if (playing) {
       audio.pause()
     } else {
-      void audio.play()
+      activate({ type: 'play' })
     }
-  }, [playing])
+  }, [playing, activate])
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const t = Number(e.target.value)
-    if (audioRef.current) audioRef.current.currentTime = t
+    const audio = audioRef.current
+    if (!audio) return
+    if (srcLoadedRef.current) {
+      audio.currentTime = t
+    }
     setCurrentTime(t)
   }
 
@@ -117,9 +182,11 @@ export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSe
 
   return (
     <div className="card flex flex-col gap-3">
+      {/* Audio element — src is set lazily via activate() on first user interaction */}
       <audio
         ref={audioRef}
-        src={src}
+        autoPlay={false}
+        preload="none"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
@@ -128,8 +195,7 @@ export default function AudioPlayer({ src, jumpToSeconds, onTimeUpdate, seekToSe
           setCurrentTime(t)
           onTimeUpdate?.(t)
         }}
-        onLoadedMetadata={() => setDuration(audioRef.current?.duration ?? 0)}
-        preload="metadata"
+        onLoadedMetadata={handleLoadedMetadata}
       />
 
       {/* Progress bar */}

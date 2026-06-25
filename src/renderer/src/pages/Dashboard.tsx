@@ -7,10 +7,9 @@ import { useRecordingStore } from '../store/recordingStore'
 import { Mic, Clock, FileText, AlertTriangle, CheckCircle, Upload } from 'lucide-react'
 import type { SystemStatusResult } from '@shared/ipc-types'
 
-function formatTotalDuration(ms: number): string {
-  const s = Math.round(ms / 1000)
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
+function formatTotalDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
   if (h > 0) return `${h}h ${m}m`
   return `${m}m`
 }
