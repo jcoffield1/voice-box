@@ -19,6 +19,7 @@ import type { AudioCaptureService } from '../services/audio/AudioCaptureService'
 import type { KeychainService } from '../services/security/KeychainService'
 import type { LLMService } from '../services/llm/LLMService'
 import type { PythonBridge } from '../python/PythonBridge'
+import type { WhisperService } from '../services/transcription/WhisperService'
 import type { LLMProviderType } from '@shared/types'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -34,11 +35,12 @@ interface SettingsIpcDeps {
   keychain: KeychainService
   llm: LLMService
   pythonBridge: PythonBridge
+  whisper: WhisperService
   onHfTokenChange?: (hasToken: boolean) => void
 }
 
 export function registerSettingsIpc(deps: SettingsIpcDeps): void {
-  const { settings, audio, keychain, llm, pythonBridge, onHfTokenChange } = deps
+  const { settings, audio, keychain, llm, pythonBridge, whisper, onHfTokenChange } = deps
 
   ipcMain.handle(IPC.settings.get, async (_event, args: GetSettingArgs): Promise<GetSettingResult> => {
     return { value: settings.get(args.key) }
@@ -50,6 +52,12 @@ export function registerSettingsIpc(deps: SettingsIpcDeps): void {
       return
     }
     settings.set(args.key, args.value)
+    // Re-configure whisper immediately so changes take effect without an app restart.
+    if (args.key === 'whisper.model' || args.key === 'whisper.language') {
+      const model = settings.get('whisper.model') ?? 'large-v3-turbo'
+      const lang = settings.get('whisper.language') ?? undefined
+      whisper.configure(model, lang)
+    }
   })
 
   ipcMain.handle(IPC.settings.getAudioDevices, async (): Promise<GetAudioDevicesResult> => {

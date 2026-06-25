@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import LiveRecordingModal from '../components/recording/LiveRecordingModal'
 import RecordingList from '../components/recording/RecordingList'
 import { useRecording } from '../hooks/useRecording'
+import { useRecordingStore } from '../store/recordingStore'
 import { Mic, Clock, FileText, AlertTriangle, CheckCircle, Upload } from 'lucide-react'
 import type { SystemStatusResult } from '@shared/ipc-types'
 
@@ -28,6 +29,7 @@ function formatRelative(ts: number): string {
 export default function Dashboard() {
   const navigate = useNavigate()
   const { recordings, loadingRecordings, deleteRecording, loadRecordings } = useRecording()
+  const isAnyProcessing = useRecordingStore((s) => s.recordings.some((r) => r.status === 'processing'))
   const [showControls, setShowControls] = useState(false)
   const [importing, setImporting] = useState(false)
   const [systemStatus, setSystemStatus] = useState<SystemStatusResult | null>(null)
@@ -141,6 +143,8 @@ export default function Dashboard() {
           <button
             className="btn-primary"
             onClick={() => setShowControls(true)}
+            disabled={isAnyProcessing}
+            title={isAnyProcessing ? 'A recording is being processed — please wait' : undefined}
           >
             New Recording
           </button>

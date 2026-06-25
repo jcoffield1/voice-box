@@ -198,6 +198,11 @@ function initServices(): void {
   // Audio + transcription
   audio = new AudioCaptureService()
   whisper = new WhisperService(pythonBridge)
+  // Apply any saved model/language preferences immediately on startup.
+  // Without this the service defaults were used regardless of user settings.
+  const savedModel = settingsRepo.get('whisper.model') ?? 'large-v3-turbo'
+  const savedLang = settingsRepo.get('whisper.language') ?? undefined
+  whisper.configure(savedModel, savedLang)
   queue = new TranscriptionQueue(whisper, audio, transcriptRepo, recordingRepo)
   tts = new TTSService()
   voiceInput = new VoiceInputService(whisper)
@@ -507,6 +512,88 @@ function initServices(): void {
     })()
   })
 
+  /**
+   * LLM second-pass transcript refinement.
+   *
+   * Only runs if the user has EXPLICITLY configured an LLM provider for the
+   * 'transcript-refinement' feature.  Small local models (e.g. llama3.2:8b) are
+   * unreliable at this task and can silently degrade quality — we do not want to
+   * fall back to whatever Ollama default happens to be installed.
+   *
+   * Recommended local models: llama3.1:70b, qwen2.5:32b, mistral-large.
+   * With those, it catches homophones and garbled proper nouns that Whisper missed.
+   */
+  async function refineTranscript(recordingId: string): Promise<void> {
+    // Skip entirely unless the user has explicitly chosen a provider for refinement.
+    const refinementProvider = settingsRepo.getJson<string>('llm.transcript-refinement.provider')
+    if (!refinementProvider) {
+      console.log('[Refinement] Skipping — no transcript-refinement provider configured')
+      return
+    }
+
+    const segments = transcriptRepo.findByRecordingId(recordingId)
+    if (segments.length < 2) return
+
+    const BATCH_SIZE = 20
+    let refined = 0
+
+    for (let i = 0; i < segments.length; i += BATCH_SIZE) {
+      const batch = segments.slice(i, i + BATCH_SIZE)
+      const numbered = batch.map((s, idx) => `${idx + 1}. "${s.text}"`).join('\n')
+
+      try {
+        const response = await llmService.complete('transcript-refinement', {
+          systemPrompt:
+            'You are an expert at correcting speech-to-text transcription errors. ' +
+            'Fix only clear ASR mistakes — misheared words, homophones, garbled proper nouns. ' +
+            'Do NOT rephrase, summarize, add, or remove content. ' +
+            'Return ONLY a valid JSON array of strings, one corrected string per segment, in the same order. No other text.',
+          messages: [
+            {
+              role: 'user',
+              content:
+                `Correct any transcription errors in these speech segments. ` +
+                `If a segment looks correct, return it unchanged.\n\n${numbered}\n\n` +
+                `Return format: ["corrected 1", "corrected 2", ...]`
+            }
+          ]
+        })
+
+        let corrections: string[]
+        try {
+          // Strip markdown code fences if the LLM wraps the JSON
+          const raw = response.text.replace(/^```[a-z]*\n?/m, '').replace(/```$/m, '').trim()
+          corrections = JSON.parse(raw)
+        } catch {
+          console.warn(`[Refinement] JSON parse failed for batch starting at ${i}; skipping batch`)
+          continue
+        }
+
+        if (!Array.isArray(corrections) || corrections.length !== batch.length) {
+          console.warn(`[Refinement] Unexpected response length for batch at ${i}; skipping`)
+          continue
+        }
+
+        for (let j = 0; j < batch.length; j++) {
+          const seg = batch[j]
+          const corrected = typeof corrections[j] === 'string' ? corrections[j].trim() : null
+          if (corrected && corrected !== seg.text && !seg.isEdited) {
+            transcriptRepo.refineText(seg.id, corrected)
+            refined++
+          }
+        }
+      } catch (err) {
+        console.warn(`[Refinement] Batch ${i} failed (non-fatal):`, (err as Error).message)
+      }
+    }
+
+    if (refined > 0) {
+      console.log(`[Refinement] Corrected ${refined} segment(s)`)
+      const updated = transcriptRepo.findByRecordingId(recordingId)
+      mainWindow?.webContents.send(IPC.transcript.speakersSwept, { recordingId, segments: updated })
+    }
+  }
+
   async function generateDebrief(recordingId: string): Promise<void> {
     const recording = recordingRepo.findById(recordingId)
     if (!recording) return
@@ -738,8 +825,23 @@ function initServices(): void {
       }
     }
 
+    // ── LLM transcript refinement ─────────────────────────────────────────────
+    // Runs after all speaker sweeps so the LLM sees context from real speaker names.
+    await refineTranscript(recordingId)
+
     // ── Debrief generation ────────────────────────────────────────────────────
     await generateDebrief(recordingId)
+
+    // ── Rebuild search embeddings ─────────────────────────────────────────────
+    // Reprocess deletes and rewrites all transcript segments, so the search
+    // index is stale after transcription. Re-embed just this recording's
+    // segments so search stays consistent without a manual Reindex.
+    try {
+      const { queued } = await embeddingService.indexAll(recordingId)
+      if (queued > 0) console.log(`[PostPipeline] Search index: queued ${queued} segment(s) for embedding`)
+    } catch (embedErr) {
+      console.warn('[PostPipeline] Search re-embedding failed (non-fatal):', (embedErr as Error).message)
+    }
 
     // Signal that the full post-recording pipeline is done — always fires so
     // the renderer clears the "Analyzing recording…" banner regardless of
@@ -766,6 +868,7 @@ function initServices(): void {
   registerRecordingIpc({
     recordingRepo,
     transcriptRepo,
+    speakerRepo,
     audio,
     queue,
     whisper,
@@ -782,6 +885,7 @@ function initServices(): void {
     keychain: keychainService,
     llm: llmService,
     pythonBridge,
+    whisper,
     onHfTokenChange: (hasToken) => { hfTokenConfigured = hasToken }
   })
   registerSpeakerIpc({ speakerRepo })

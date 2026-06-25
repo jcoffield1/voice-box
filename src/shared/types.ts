@@ -92,7 +92,7 @@ export interface AppSettings {
 
 // LLM types
 export type LLMProviderType = 'ollama' | 'claude' | 'openai'
-export type LLMFeature = 'summarization' | 'conversation' | 'embeddings' | 'intent'
+export type LLMFeature = 'summarization' | 'conversation' | 'embeddings' | 'intent' | 'transcript-refinement'
 
 export interface LLMModel {
   id: string

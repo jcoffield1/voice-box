@@ -69,7 +69,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       language: language.value ?? 'en'
     })
     // Load provider and model for all features
-    const features: LLMFeature[] = ['summarization', 'conversation', 'embeddings', 'intent']
+    const features: LLMFeature[] = ['summarization', 'conversation', 'embeddings', 'intent', 'transcript-refinement']
     for (const feature of features) {
       const result = await window.api.settings.getProviderForFeature({ feature })
       if (result.provider) {

@@ -76,12 +76,12 @@ export default function AudioDeviceSettings() {
               void save('whisper.model', e.target.value)
             }}
           >
-            {['tiny', 'base', 'small', 'medium', 'large'].map((m) => (
+            {['tiny', 'base', 'small', 'medium', 'large-v3-turbo', 'large-v3'].map((m) => (
               <option key={m} value={m}>{m}</option>
             ))}
           </select>
           <p className="text-xs text-zinc-500 mt-1">
-            Larger models are more accurate but require more RAM and GPU.
+            large-v3-turbo is the best balance of accuracy and speed for live transcription. large-v3 is slightly more accurate but may lag on older hardware. tiny/base miss ~30% of words.
           </p>
         </div>
 

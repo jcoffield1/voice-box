@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 """
-Voice embedding server using Resemblyzer.
-Extracts d-vector embeddings from audio segments for speaker recognition.
+Voice embedding server.
 
-Optimisations vs v1:
-  - Encoder is loaded eagerly on startup (warmup) — no cold-load delay on first request.
-  - embed_segments / embed_segments_batch use seek-based partial reads (soundfile) so
-    only the requested time-range chunks are loaded — not the entire audio file.  This
-    is critical for long recordings where a full preprocess_wav() call could take minutes.
-  - embed_segments_batch accepts multiple segment groups in one request, avoiding N
-    round-trips for cross-cluster matching.
-  - compare has been kept for back-compat but should not be called in a loop —
-    the TypeScript side performs bulk cosine similarity against stored embeddings.
-  - Cosine similarity (compare / compare_all) uses vectorised NumPy ops.
+Primary backend: pyannote/embedding (ECAPA-TDNN, 512-dim) — used when HF_TOKEN is set
+and the model is available.  This is significantly more accurate than Resemblyzer for
+speaker identification, especially for short or overlapping speech segments.
+
+Fallback backend: Resemblyzer (d-vector, 256-dim) — used when no HF_TOKEN is configured
+or the pyannote model fails to load.
+
+The backend is selected once at startup (warmup) and stays fixed for the process lifetime.
+All public request handlers are backend-agnostic — the TypeScript side sees the same API
+regardless of which backend is active.
+
+Dimension note: pyannote produces 512-dim embeddings; Resemblyzer produces 256-dim.
+The TypeScript side guards cosine similarity against dimension mismatches, so old
+Resemblyzer embeddings stored in the database are safely ignored (score 0) and get
+replaced the next time a speaker is confirmed.
+
+Optimisations:
+  - Backend is loaded eagerly at warmup — no cold-load delay on first request.
+  - All audio loading uses seek-based partial reads (soundfile) — never loads the
+    full file for large recordings.
+  - embed_segments_batch embeds multiple speaker clusters in one IPC round-trip.
 """
 
 import sys
@@ -24,75 +34,88 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
-# ── Encoder singleton ─────────────────────────────────────────────────────────
+SR = 16000  # All audio is resampled to 16 kHz before embedding
 
-_encoder = None
+# ── Backend singletons ────────────────────────────────────────────────────────
 
-
-def get_encoder():
-    global _encoder
-    if _encoder is None:
-        from resemblyzer import VoiceEncoder
-        _encoder = VoiceEncoder()
-    return _encoder
+_backend: str | None = None   # "pyannote" or "resemblyzer"
+_inference = None              # pyannote.audio Inference instance
+_encoder = None                # Resemblyzer VoiceEncoder instance
 
 
-# ── Wav cache (path → float32 numpy array at 16 kHz) ─────────────────────────
+def _init_backend() -> None:
+    global _backend, _inference, _encoder
+    if _backend is not None:
+        return
 
-_wav_cache: dict = {}
-_WAV_CACHE_MAX = 8  # keep at most 8 files in memory
+    hf_token = os.environ.get("HF_TOKEN")
+
+    if hf_token:
+        try:
+            from pyannote.audio import Inference
+            _inference = Inference(
+                "pyannote/embedding",
+                use_auth_token=hf_token,
+                window="whole",
+            )
+            _backend = "pyannote"
+            return
+        except Exception as e:
+            # Model not accepted / not downloaded yet — fall through to resemblyzer.
+            print(
+                f"[embed_voice] pyannote/embedding unavailable ({e}); "
+                "falling back to Resemblyzer",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    from resemblyzer import VoiceEncoder
+    _encoder = VoiceEncoder()
+    _backend = "resemblyzer"
 
 
-def get_wav(audio_path: str):
-    if audio_path in _wav_cache:
-        return _wav_cache[audio_path]
+# ── Core embedding ────────────────────────────────────────────────────────────
 
-    from resemblyzer import preprocess_wav
-    wav = preprocess_wav(audio_path)
+def _embed_audio(audio: np.ndarray) -> np.ndarray:
+    """Return a speaker embedding for a float32 16 kHz mono numpy array."""
+    min_samples = SR // 4  # 250 ms minimum — anything shorter is unreliable
+    if len(audio) < min_samples:
+        raise ValueError(
+            f"Audio segment too short ({len(audio) / SR:.3f}s); minimum is 0.25s"
+        )
 
-    # Evict oldest entry if cache is full
-    if len(_wav_cache) >= _WAV_CACHE_MAX:
-        oldest = next(iter(_wav_cache))
-        del _wav_cache[oldest]
+    if _backend == "pyannote":
+        import torch
+        waveform = torch.from_numpy(audio).float().unsqueeze(0)  # [1, T]
+        embedding = _inference({"waveform": waveform, "sample_rate": SR})
+        return np.squeeze(np.array(embedding)).astype(np.float32)
+    else:
+        return _encoder.embed_utterance(audio)
 
-    _wav_cache[audio_path] = wav
-    return wav
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-SR = 16000  # Resemblyzer always works at 16 kHz
-
+# ── Audio loading ─────────────────────────────────────────────────────────────
 
 def _load_segment(audio_path: str, start_sec: float, end_sec: float) -> np.ndarray:
-    """Read only a specific time range from a file and return float32 mono @ SR.
-
-    Uses soundfile's seek-based partial read so we never load the full file into
-    memory — critical for long recordings where loading the whole thing could
-    take minutes.
-    """
+    """Seek-based partial read — never loads the full file into memory."""
     info = sf.info(audio_path)
-    native_sr    = info.samplerate
-    start_frame  = max(0, int(start_sec * native_sr))
-    end_frame    = min(info.frames, int(end_sec * native_sr))
+    native_sr   = info.samplerate
+    start_frame = max(0, int(start_sec * native_sr))
+    end_frame   = min(info.frames, int(end_sec * native_sr))
     if end_frame <= start_frame:
         return np.zeros(0, dtype=np.float32)
 
     audio, _ = sf.read(
         audio_path, start=start_frame, stop=end_frame,
-        dtype='float32', always_2d=False
+        dtype="float32", always_2d=False,
     )
 
-    # Mix down to mono
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
 
-    # Resample to 16 kHz if needed
     if native_sr != SR:
         g     = gcd(native_sr, SR)
         audio = resample_poly(audio, SR // g, native_sr // g).astype(np.float32)
 
-    # Resemblyzer expects values in [-1, 1]; normalise if needed
     peak = np.abs(audio).max()
     if peak > 1.0:
         audio = audio / peak
@@ -102,11 +125,11 @@ def _load_segment(audio_path: str, start_sec: float, end_sec: float) -> np.ndarr
 
 def _extract_combined(audio_path: str, segments: list) -> np.ndarray:
     """Load and concatenate specific time-range segments (seek-based, no full-file load)."""
-    chunks = []
-    for seg in segments:
-        chunk = _load_segment(audio_path, float(seg["start"]), float(seg["end"]))
-        if len(chunk) > 0:
-            chunks.append(chunk)
+    chunks = [
+        _load_segment(audio_path, float(s["start"]), float(s["end"]))
+        for s in segments
+    ]
+    chunks = [c for c in chunks if len(c) > 0]
     if not chunks:
         raise ValueError("No audio data found in the specified segments")
     return np.concatenate(chunks)
@@ -115,27 +138,25 @@ def _extract_combined(audio_path: str, segments: list) -> np.ndarray:
 # ── Request handlers ──────────────────────────────────────────────────────────
 
 def warmup(_payload: dict) -> dict:
-    """Eagerly load the VoiceEncoder so the first real request is fast."""
-    get_encoder()
-    return {"ready": True}
+    """Eagerly load the embedding backend — eliminates cold-load delay on first request."""
+    _init_backend()
+    return {"ready": True, "backend": _backend}
 
 
 def embed(payload: dict) -> dict:
+    """Embed an entire audio file (legacy — prefer embed_segments for time-range extraction)."""
     audio_path = payload.get("audio_path")
     speaker_id = payload.get("speaker_id", "unknown")
 
     if not audio_path or not os.path.exists(audio_path):
         raise ValueError(f"Audio file not found: {audio_path}")
 
-    encoder  = get_encoder()
-    wav      = get_wav(audio_path)
-    embedding = encoder.embed_utterance(wav)
+    _init_backend()
+    info  = sf.info(audio_path)
+    audio = _load_segment(audio_path, 0.0, info.frames / info.samplerate)
+    embedding = _embed_audio(audio)
 
-    return {
-        "embedding": embedding.tolist(),
-        "speaker_id": speaker_id,
-        "dim": len(embedding),
-    }
+    return {"embedding": embedding.tolist(), "speaker_id": speaker_id, "dim": len(embedding)}
 
 
 def embed_segments(payload: dict) -> dict:
@@ -144,28 +165,22 @@ def embed_segments(payload: dict) -> dict:
     segments   = payload.get("segments", [])
 
     if not audio_path or not os.path.exists(audio_path):
-        # File missing (e.g. snapshot deleted before Python read it) — return empty gracefully
         return {"embedding": [], "dim": 0}
     if not segments:
         raise ValueError("No segments provided")
 
-    encoder  = get_encoder()
+    _init_backend()
     try:
-        combined = _extract_combined(audio_path, segments)
+        combined  = _extract_combined(audio_path, segments)
+        embedding = _embed_audio(combined)
     except ValueError:
-        # All requested segments fall outside the audio file duration — return
-        # an empty embedding so the caller can handle it without an exception.
         return {"embedding": [], "dim": 0}
-    embedding = encoder.embed_utterance(combined)
 
-    return {
-        "embedding": embedding.tolist(),
-        "dim": len(embedding),
-    }
+    return {"embedding": embedding.tolist(), "dim": len(embedding)}
 
 
 def embed_segments_batch(payload: dict) -> dict:
-    """Embed multiple groups of segments from the same audio file in one call.
+    """Embed multiple speaker clusters from the same audio file in one call.
 
     Payload:
       {
@@ -179,8 +194,8 @@ def embed_segments_batch(payload: dict) -> dict:
     Response:
       {
         "results": [
-          {"id": "SPEAKER_00", "embedding": [...], "dim": 256},
-          {"id": "SPEAKER_01", "embedding": [...], "dim": 256}
+          {"id": "SPEAKER_00", "embedding": [...], "dim": 512},
+          {"id": "SPEAKER_01", "embedding": [...], "dim": 512}
         ]
       }
     """
@@ -192,20 +207,18 @@ def embed_segments_batch(payload: dict) -> dict:
     if not groups:
         raise ValueError("No groups provided")
 
-    encoder = get_encoder()
-    # Wav is cached — loaded once for all groups
+    _init_backend()
     results = []
     for group in groups:
         try:
             combined  = _extract_combined(audio_path, group.get("segments", []))
-            embedding = encoder.embed_utterance(combined)
+            embedding = _embed_audio(combined)
             results.append({
                 "id":        group.get("id", ""),
                 "embedding": embedding.tolist(),
                 "dim":       len(embedding),
             })
         except Exception as e:
-            # Don't abort the whole batch for one bad group
             results.append({"id": group.get("id", ""), "error": str(e)})
 
     return {"results": results}
@@ -215,13 +228,10 @@ def compare(payload: dict) -> dict:
     """Cosine similarity between two embeddings (kept for back-compat)."""
     a = np.array(payload["embedding_a"], dtype=np.float32)
     b = np.array(payload["embedding_b"], dtype=np.float32)
-
     norm_a = np.linalg.norm(a)
     norm_b = np.linalg.norm(b)
-
     if norm_a == 0 or norm_b == 0:
         return {"similarity": 0.0}
-
     return {"similarity": float(np.dot(a, b) / (norm_a * norm_b))}
 
 
@@ -246,13 +256,15 @@ def handle_request(request: dict) -> dict:
 
 
 def main():
-    # Eagerly warm up the encoder so the first user-facing request is instant.
-    # Errors here are printed to stderr but don't crash the server loop.
     try:
-        get_encoder()
-        print(json.dumps({"startup": "ready"}), flush=True)
+        _init_backend()
+        print(json.dumps({"startup": "ready", "backend": _backend}), flush=True)
     except Exception as e:
-        print(json.dumps({"startup": "error", "detail": str(e)}), file=sys.stderr, flush=True)
+        print(
+            json.dumps({"startup": "error", "detail": str(e)}),
+            file=sys.stderr,
+            flush=True,
+        )
 
     for line in sys.stdin:
         line = line.strip()

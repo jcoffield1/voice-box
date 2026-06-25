@@ -1,7 +1,13 @@
-import { useState, useEffect } from 'react'
-import { Eye, EyeOff, Check, Trash2, Loader2, Wifi, WifiOff, RefreshCw } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Eye, EyeOff, Check, Trash2, Loader2, Wifi, WifiOff, RefreshCw, Download } from 'lucide-react'
 import { useSettings } from '../../hooks/useSettings'
 import type { LLMProviderType, LLMFeature } from '@shared/types'
+import { MODEL_HINTS, MODEL_RECOMMENDED } from '../../data/modelHints'
+
+interface PullState {
+  status: string
+  percent: number | null
+}
 
 const PROVIDERS: { id: LLMProviderType; label: string; hasKey: boolean; keyLabel?: string }[] = [
   { id: 'ollama', label: 'Ollama (local)', hasKey: false },
@@ -9,11 +15,12 @@ const PROVIDERS: { id: LLMProviderType; label: string; hasKey: boolean; keyLabel
   { id: 'openai', label: 'OpenAI', hasKey: true, keyLabel: 'OpenAI API Key' }
 ]
 
-const FEATURES: { id: LLMFeature; label: string }[] = [
-  { id: 'conversation', label: 'Chat / Q&A' },
-  { id: 'summarization', label: 'Summarization' },
-  { id: 'intent', label: 'Intent detection' },
-  { id: 'embeddings', label: 'Semantic search embeddings' }
+const FEATURES: { id: LLMFeature; label: string; hint: string }[] = [
+  { id: 'conversation',          label: 'Chat / Q&A',                  hint: MODEL_HINTS.conversation },
+  { id: 'summarization',         label: 'Summarization',                hint: MODEL_HINTS.summarization },
+  { id: 'intent',                label: 'Intent detection',             hint: MODEL_HINTS.intent },
+  { id: 'embeddings',            label: 'Semantic search embeddings',   hint: MODEL_HINTS.embeddings },
+  { id: 'transcript-refinement', label: 'Transcript refinement',        hint: MODEL_HINTS['transcript-refinement'] },
 ]
 
 export default function LLMProviderSettings() {
@@ -25,6 +32,7 @@ export default function LLMProviderSettings() {
   const [testStatus, setTestStatus] = useState<Partial<Record<LLMProviderType, 'testing' | 'ok' | 'error'>>>({})
   const [testError, setTestError] = useState<Partial<Record<LLMProviderType, string>>>({})
   const [modelsLoading, setModelsLoading] = useState(false)
+  const [pulling, setPulling] = useState<Partial<Record<LLMFeature, PullState | 'done' | 'error'>>>({})
 
   // Load whether each provider already has a key stored in keychain
   useEffect(() => {
@@ -52,6 +60,39 @@ export default function LLMProviderSettings() {
       setModelsLoading(false)
     }
   }
+
+  // Pull event listeners
+  useEffect(() => {
+    const offProgress = window.api.ai.onPullProgress((payload) => {
+      const feature = Object.entries(MODEL_RECOMMENDED).find(([, m]) => m === payload.model)?.[0] as LLMFeature | undefined
+      if (!feature) return
+      setPulling((s) => ({ ...s, [feature]: { status: payload.status, percent: payload.percent } }))
+    })
+    const offDone = window.api.ai.onPullDone(async (payload) => {
+      const feature = Object.entries(MODEL_RECOMMENDED).find(([, m]) => m === payload.model)?.[0] as LLMFeature | undefined
+      if (!feature) return
+      setPulling((s) => ({ ...s, [feature]: 'done' }))
+      await loadModels('ollama')
+      // Auto-select the newly pulled model for this feature
+      setModelForFeature(feature, payload.model)
+      await window.api.settings.setProviderForFeature({ feature, provider: 'ollama', model: payload.model })
+      setTimeout(() => setPulling((s) => { const n = { ...s }; delete n[feature as LLMFeature]; return n }), 2000)
+    })
+    const offError = window.api.ai.onPullError((payload) => {
+      const feature = Object.entries(MODEL_RECOMMENDED).find(([, m]) => m === payload.model)?.[0] as LLMFeature | undefined
+      if (!feature) return
+      setPulling((s) => ({ ...s, [feature]: 'error' }))
+    })
+    return () => { offProgress(); offDone(); offError() }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handlePull = useCallback(async (feature: LLMFeature) => {
+    const model = MODEL_RECOMMENDED[feature]
+    if (!model) return
+    setPulling((s) => ({ ...s, [feature]: { status: 'starting…', percent: null } }))
+    await window.api.ai.pullModel({ model })
+  }, [])
 
   const handleSaveKey = async (provider: LLMProviderType) => {
     const key = keys[provider]
@@ -240,6 +281,61 @@ export default function LLMProviderSettings() {
                   />
                 )}
               </div>
+              {/* Hint + pull button */}
+              {(() => {
+                const recommended = MODEL_RECOMMENDED[f.id]
+                const pullState = pulling[f.id]
+                const alreadyInstalled = provider !== 'ollama' || !recommended ||
+                  ollamaModels.some(m => m.id === recommended || m.id.startsWith(recommended.split(':')[0] + ':'))
+                const isPulling = pullState && pullState !== 'done' && pullState !== 'error'
+                return (
+                  <div className="flex items-start gap-2">
+                    <p className="text-xs text-zinc-400 leading-relaxed flex-1">{f.hint}</p>
+                    {!alreadyInstalled && !isPulling && pullState !== 'done' && (
+                      <button
+                        type="button"
+                        className="btn-ghost py-1 px-2 text-xs flex items-center gap-1 shrink-0 text-zinc-400 hover:text-zinc-200"
+                        onClick={() => void handlePull(f.id)}
+                      >
+                        <Download className="w-3 h-3" />
+                        Pull {recommended}
+                      </button>
+                    )}
+                    {pullState === 'done' && (
+                      <span className="text-xs text-emerald-400 flex items-center gap-1 shrink-0">
+                        <Check className="w-3 h-3" /> Installed
+                      </span>
+                    )}
+                    {pullState === 'error' && (
+                      <span className="text-xs text-red-400 shrink-0">Pull failed</span>
+                    )}
+                  </div>
+                )
+              })()}
+              {/* Pull progress bar */}
+              {(() => {
+                const pullState = pulling[f.id]
+                if (!pullState || pullState === 'done' || pullState === 'error') return null
+                return (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-xs text-zinc-500">
+                      <span className="flex items-center gap-1.5">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        {pullState.status}
+                      </span>
+                      {pullState.percent !== null && <span>{pullState.percent}%</span>}
+                    </div>
+                    {pullState.percent !== null && (
+                      <div className="h-1 bg-zinc-700 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                          style={{ width: `${pullState.percent}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           )
         })}

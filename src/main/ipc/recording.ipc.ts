@@ -28,10 +28,12 @@ import type {
   ExportTranscriptArgs,
   ExportTranscriptResult,
   ExportSummaryArgs,
-  ExportSummaryResult
+  ExportSummaryResult,
+  ReprocessRecordingArgs
 } from '@shared/ipc-types'
 import type { RecordingRepository } from '../services/storage/repositories/RecordingRepository'
 import type { TranscriptRepository } from '../services/storage/repositories/TranscriptRepository'
+import type { SpeakerRepository } from '../services/storage/repositories/SpeakerRepository'
 import type { AudioCaptureService } from '../services/audio/AudioCaptureService'
 import type { TranscriptionQueue } from '../services/transcription/TranscriptionQueue'
 import type { WhisperService } from '../services/transcription/WhisperService'
@@ -40,6 +42,7 @@ import type { WebContents } from 'electron'
 interface RecordingIpcDeps {
   recordingRepo: RecordingRepository
   transcriptRepo: TranscriptRepository
+  speakerRepo: SpeakerRepository
   audio: AudioCaptureService
   queue: TranscriptionQueue
   whisper: WhisperService
@@ -55,7 +58,7 @@ function formatTime(seconds: number): string {
 }
 
 export function registerRecordingIpc(deps: RecordingIpcDeps): void {
-  const { recordingRepo, transcriptRepo, audio, queue, whisper, getWebContents, triggerPostRecordingPipeline, regenerateDebrief } = deps
+  const { recordingRepo, transcriptRepo, speakerRepo, audio, queue, whisper, getWebContents, triggerPostRecordingPipeline, regenerateDebrief } = deps
 
   // Register once — not inside the start handler, to avoid accumulating listeners
   queue.on('segment', (segment) => {
@@ -82,6 +85,13 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     if (args.expectedSpeakerIds && args.expectedSpeakerIds.length > 0) {
       recordingRepo.setExpectedSpeakers(recording.id, args.expectedSpeakerIds)
     }
+
+    // Prime Whisper with the meeting title and expected speaker names so it
+    // transcribes known proper nouns correctly from the first chunk onward.
+    const speakerNames = (args.expectedSpeakerIds ?? [])
+      .map((id) => speakerRepo.findById(id)?.name)
+      .filter((n): n is string => !!n)
+    whisper.setVocabHints(args.title, speakerNames)
 
     audio.start(args.config)
 
@@ -157,6 +167,53 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
 
   ipcMain.handle(IPC.recording.regenerateDebrief, async (_event, args: RegenerateDebriefArgs): Promise<void> => {
     regenerateDebrief(args.recordingId)
+  })
+
+  // ─── Reprocess Recording ─────────────────────────────────────────────────
+  // Re-transcribes the saved audio file from scratch, then runs the full
+  // post-recording pipeline (diarization, speaker ID, debrief).
+  // Existing manually-edited segments and speaker assignments are discarded.
+
+  ipcMain.handle(IPC.recording.reprocessRecording, async (_event, args: ReprocessRecordingArgs): Promise<void> => {
+    const recording = recordingRepo.findById(args.recordingId)
+    if (!recording?.audioPath) throw new Error('Recording has no saved audio file')
+
+    // Mark as processing and wipe the old transcript + debrief immediately so
+    // the renderer shows a clean loading state without stale content.
+    recordingRepo.update(recording.id, { status: 'processing', debrief: null, debriefAt: null })
+    transcriptRepo.deleteByRecordingId(recording.id)
+    getWebContents()?.send(IPC.transcript.speakersSwept, { recordingId: recording.id, segments: [] })
+    getWebContents()?.send(IPC.recording.debriefReady, { recordingId: recording.id, debrief: '' })
+
+    void (async () => {
+      try {
+        console.log(`[Reprocess] Re-transcribing recording ${recording.id} (${recording.audioPath})`)
+        const segments = await whisper.transcribeAudioFile(recording.audioPath!)
+
+        for (const seg of segments) {
+          if (!seg.text.trim()) continue
+          if (seg.confidence < -0.7) continue
+          transcriptRepo.create({
+            recordingId: recording.id,
+            text: seg.text,
+            timestampStart: seg.start,
+            timestampEnd: seg.end,
+            whisperConfidence: seg.confidence
+          })
+        }
+
+        const lastSeg = segments[segments.length - 1]
+        const duration = lastSeg ? Math.round(lastSeg.end) : recording.duration
+        recordingRepo.update(recording.id, { status: 'complete', duration })
+
+        console.log(`[Reprocess] Transcription done — ${segments.length} segment(s). Running post-recording pipeline.`)
+        triggerPostRecordingPipeline(recording.id)
+      } catch (err) {
+        console.error('[Reprocess] Failed:', (err as Error).message)
+        recordingRepo.update(recording.id, { status: 'error' })
+        getWebContents()?.send(IPC.recording.processed, { recordingId: recording.id })
+      }
+    })()
   })
 
   ipcMain.handle(IPC.recording.getExpectedSpeakers, async (_event, args: GetExpectedSpeakersArgs): Promise<GetExpectedSpeakersResult> => {

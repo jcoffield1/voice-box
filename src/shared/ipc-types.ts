@@ -84,6 +84,10 @@ export interface RegenerateDebriefArgs {
   recordingId: string
 }
 
+export interface ReprocessRecordingArgs {
+  recordingId: string
+}
+
 export interface PauseRecordingArgs {
   recordingId: string
 }
@@ -266,6 +270,16 @@ export interface TestProviderResult {
   error?: string
 }
 
+export interface PullModelArgs {
+  model: string
+}
+
+export interface PullModelProgressPayload {
+  model: string
+  status: string
+  percent: number | null
+}
+
 // ─── Settings IPC ────────────────────────────────────────────────────────────
 
 export interface GetSettingArgs {
@@ -370,7 +384,9 @@ export const IPC = {
     // Event pushed from main → renderer when the full post-recording pipeline finishes
     processed: 'recording:processed',
     // Import an audio file and process it like a recording
-    import: 'recording:import'
+    import: 'recording:import',
+    // Re-transcribe and re-diarize an existing recording from its saved audio file
+    reprocessRecording: 'recording:reprocessRecording'
   },
   transcript: {
     get: 'transcript:get',
@@ -400,12 +416,16 @@ export const IPC = {
     updateThreadTitle: 'ai:updateThreadTitle',
     getModels: 'ai:getModels',
     testProvider: 'ai:testProvider',
+    pullModel: 'ai:pullModel',
     speak: 'ai:speak',
     stopSpeaking: 'ai:stopSpeaking',
     listVoices: 'ai:listVoices',
     // Streaming event pushed from main → renderer
     chatChunk: 'ai:chatChunk',
-    chatDone: 'ai:chatDone'
+    chatDone: 'ai:chatDone',
+    pullProgress: 'ai:pullProgress',
+    pullDone: 'ai:pullDone',
+    pullError: 'ai:pullError'
   },
   settings: {
     get: 'settings:get',

@@ -16,8 +16,12 @@ interface EmbedSegmentsBatchResult {
   results: Array<{ id: string; embedding?: number[]; dim?: number; error?: string }>
 }
 
-/** Cosine similarity between two equal-length vectors. Returns 0 for zero-norm inputs. */
+/** Cosine similarity between two vectors. Returns 0 for zero-norm or mismatched dimensions.
+ *  Dimension mismatch occurs when the embedding backend changes (e.g. Resemblyzer 256-dim →
+ *  pyannote 512-dim) — returning 0 causes the old embedding to be safely ignored and
+ *  replaced the next time a speaker is confirmed. */
 function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0
   let dot = 0, normA = 0, normB = 0
   for (let i = 0; i < a.length; i++) {
     dot   += a[i] * b[i]

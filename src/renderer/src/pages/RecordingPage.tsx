@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import {
-  ArrowLeft, Pencil, Check, X, Download, FileText, Tag, StickyNote, Maximize2, Minimize2, Loader2, LayoutTemplate, RefreshCw
+  ArrowLeft, Pencil, Check, X, Download, FileText, Tag, StickyNote, Maximize2, Minimize2, Loader2, LayoutTemplate, RefreshCw, RotateCcw
 } from 'lucide-react'
 import type { SummaryTemplate } from '@shared/types'
 import TranscriptView from '../components/transcript/TranscriptView'
@@ -69,6 +69,9 @@ export default function RecordingPage() {
   const [exportSuccess, setExportSuccess] = useState<string | null>(null)
   const exportRef = useRef<HTMLDivElement>(null)
 
+  // Reprocess
+  const [isReprocessing, setIsReprocessing] = useState(false)
+
   // Playback sync: currentTime from AudioPlayer drives transcript highlight;
   // seekToSeconds is set when the user clicks a segment play button.
   const [playbackSeconds, setPlaybackSeconds] = useState<number | undefined>(undefined)
@@ -113,6 +116,18 @@ export default function RecordingPage() {
       // Don't auto-switch — just let the tab glow/indicate availability
     }
   }, [recording?.debrief])
+
+  // When the post-recording pipeline finishes, reload the recording from the
+  // main process so the status, duration, and debrief reflect the latest DB state.
+  useEffect(() => {
+    const off = window.api.recording.onProcessed(async ({ recordingId }) => {
+      if (recordingId !== id) return
+      setIsReprocessing(false)
+      const { recording: updated } = await window.api.recording.get({ recordingId })
+      if (updated) updateRecording(updated)
+    })
+    return off
+  }, [id, updateRecording])
 
   const saveTitle = useCallback(async () => {
     const trimmed = titleDraft.trim()
@@ -174,6 +189,21 @@ export default function RecordingPage() {
       setTimeout(() => setExportSuccess(null), 3000)
     }
   }, [id])
+
+  const reprocess = useCallback(async () => {
+    if (!id || isReprocessing) return
+    setIsReprocessing(true)
+    // Optimistically mark the recording as processing in the store so the UI
+    // reflects the new state without waiting for the IPC round-trip.
+    if (recording) updateRecording({ ...recording, status: 'processing', debrief: null, debriefAt: null })
+    try {
+      await window.api.recording.reprocessRecording({ recordingId: id })
+    } catch (err) {
+      console.error('[Reprocess] Failed to start:', err)
+      setIsReprocessing(false)
+      if (recording) updateRecording(recording)
+    }
+  }, [id, isReprocessing, recording, updateRecording])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -491,6 +521,19 @@ export default function RecordingPage() {
               <span className="text-xs bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full border border-red-500/30 shrink-0">
                 LIVE
               </span>
+            )}
+
+            {/* Reprocess button */}
+            {!isLive && recording?.audioPath && (
+              <button
+                className="btn-ghost py-1.5 px-3 text-xs flex items-center gap-1.5 shrink-0"
+                onClick={reprocess}
+                disabled={isReprocessing || recording?.status === 'processing'}
+                title="Re-transcribe and re-diarize from the saved audio file"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${isReprocessing ? 'animate-spin' : ''}`} />
+                {isReprocessing ? 'Reprocessing…' : 'Reprocess'}
+              </button>
             )}
 
             {/* Export dropdown */}

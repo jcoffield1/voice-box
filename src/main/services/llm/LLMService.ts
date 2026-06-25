@@ -1,5 +1,5 @@
 import type { LLMProvider } from './providers/LLMProvider'
-import { OllamaProvider } from './providers/OllamaProvider'
+import { OllamaProvider, type PullProgress } from './providers/OllamaProvider'
 import { ClaudeProvider } from './providers/ClaudeProvider'
 import { OpenAIProvider } from './providers/OpenAIProvider'
 import type { CompletionRequest, CompletionResponse, LLMModel, LLMProviderType, LLMFeature } from '@shared/types'
@@ -36,7 +36,12 @@ export class LLMService {
 
   getProviderForFeature(feature: LLMFeature): { provider: LLMProvider; model: string } {
     const providerType = this.settings.getJson<LLMProviderType>(`llm.${feature}.provider`) ?? 'ollama'
-    const model = this.settings.getJson<string>(`llm.${feature}.model`) ?? 'llama3.2:8b'
+    // Use purpose-built defaults per feature. Embeddings need a dedicated embedding
+    // model — using a chat model (llama3.2:8b) produces poor-quality vectors.
+    const DEFAULT_MODEL: Record<string, string> = {
+      embeddings: 'nomic-embed-text',
+    }
+    const model = this.settings.getJson<string>(`llm.${feature}.model`) ?? DEFAULT_MODEL[feature] ?? 'llama3.2:8b'
     return { provider: this.getProvider(providerType), model }
   }
 
@@ -60,6 +65,12 @@ export class LLMService {
 
   async listModels(type: LLMProviderType): Promise<LLMModel[]> {
     return this.getProvider(type).listModels()
+  }
+
+  async *pullOllamaModel(model: string): AsyncGenerator<PullProgress> {
+    const ollama = this.providers.get('ollama')
+    if (!(ollama instanceof OllamaProvider)) throw new Error('Ollama provider not available')
+    yield* ollama.pull(model)
   }
 
   async isAvailable(type: LLMProviderType): Promise<boolean> {

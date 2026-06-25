@@ -8,6 +8,18 @@ interface OllamaTagsResponse {
   }>
 }
 
+interface OllamaPullChunk {
+  status: string
+  digest?: string
+  total?: number
+  completed?: number
+}
+
+export interface PullProgress {
+  status: string
+  percent: number | null
+}
+
 interface OllamaChatResponse {
   message: { content: string }
   model: string
@@ -144,6 +156,34 @@ export class OllamaProvider implements LLMProvider {
         } catch {
           // Partial line — fine, will be in next read
         }
+      }
+    }
+  }
+
+  async *pull(model: string): AsyncGenerator<PullProgress> {
+    const res = await fetch(`${this.baseUrl}/api/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: model, stream: true })
+    })
+    if (!res.ok) throw new Error(`Ollama pull failed: ${res.status}`)
+    if (!res.body) throw new Error('No response body')
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      for (const line of decoder.decode(value).split('\n').filter(l => l.trim())) {
+        try {
+          const chunk = JSON.parse(line) as OllamaPullChunk
+          const percent = chunk.total && chunk.completed
+            ? Math.round((chunk.completed / chunk.total) * 100)
+            : null
+          yield { status: chunk.status, percent }
+          if (chunk.status === 'success') return
+        } catch { /* partial line */ }
       }
     }
   }

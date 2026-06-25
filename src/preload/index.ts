@@ -13,6 +13,7 @@ import type {
   ImportAudioArgs,
   ImportAudioResult,
   RegenerateDebriefArgs,
+  ReprocessRecordingArgs,
   GetExpectedSpeakersArgs,
   GetExpectedSpeakersResult,
   SetExpectedSpeakersArgs,
@@ -52,6 +53,8 @@ import type {
   GetModelsResult,
   TestProviderArgs,
   TestProviderResult,
+  PullModelArgs,
+  PullModelProgressPayload,
   SpeakArgs,
   ListVoicesResult,
   GetSettingArgs,
@@ -135,6 +138,8 @@ const api = {
       invoke<ExportSummaryResult>(IPC.recording.exportSummary, args),
     regenerateDebrief: (args: RegenerateDebriefArgs) =>
       invoke<void>(IPC.recording.regenerateDebrief, args),
+    reprocessRecording: (args: ReprocessRecordingArgs) =>
+      invoke<void>(IPC.recording.reprocessRecording, args),
     getExpectedSpeakers: (args: GetExpectedSpeakersArgs) =>
       invoke<GetExpectedSpeakersResult>(IPC.recording.getExpectedSpeakers, args),
     setExpectedSpeakers: (args: SetExpectedSpeakersArgs) =>
@@ -197,6 +202,14 @@ const api = {
       invoke<GetModelsResult>(IPC.ai.getModels, args),
     testProvider: (args: TestProviderArgs) =>
       invoke<TestProviderResult>(IPC.ai.testProvider, args),
+    pullModel: (args: PullModelArgs) =>
+      invoke<void>(IPC.ai.pullModel, args),
+    onPullProgress: (cb: (payload: PullModelProgressPayload) => void) =>
+      on(IPC.ai.pullProgress, cb as (...args: unknown[]) => void),
+    onPullDone: (cb: (payload: { model: string }) => void) =>
+      on(IPC.ai.pullDone, cb as (...args: unknown[]) => void),
+    onPullError: (cb: (payload: { model: string; error: string }) => void) =>
+      on(IPC.ai.pullError, cb as (...args: unknown[]) => void),
     speak: (args: SpeakArgs) =>
       invoke<void>(IPC.ai.speak, args),
     stopSpeaking: () =>

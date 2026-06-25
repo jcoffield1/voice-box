@@ -30,12 +30,13 @@ except ImportError:
     pass
 
 
-def get_model(size: str = "base"):
+def get_model(size: str = "large-v3-turbo"):
     global _whisper_model, _current_model_size
     if _whisper_model is None or _current_model_size != size:
         if _use_faster_whisper:
-            # int8 quantization is fast on Apple Silicon ARM CPU via CTranslate2
-            _whisper_model = FasterWhisperModel(size, device="cpu", compute_type="int8")
+            # int8_float32: quantized weights with float32 accumulation — better accuracy
+            # than pure int8 while remaining fast on Apple Silicon ARM CPU via CTranslate2.
+            _whisper_model = FasterWhisperModel(size, device="cpu", compute_type="int8_float32")
         else:
             import whisper
             _whisper_model = whisper.load_model(size)
@@ -45,8 +46,11 @@ def get_model(size: str = "base"):
 
 def transcribe(payload: dict) -> dict:
     audio_path = payload.get("audio_path")
-    model_size = payload.get("model_size", "base")
+    model_size = payload.get("model_size", "large-v3-turbo")
     language = payload.get("language", None)  # None = auto-detect
+    # Carry the last few sentences from the previous chunk so Whisper has context
+    # for word disambiguation, proper nouns, and sentence boundaries.
+    initial_prompt = payload.get("initial_prompt") or None
 
     if not audio_path or not os.path.exists(audio_path):
         raise ValueError(f"Audio file not found: {audio_path}")
@@ -55,7 +59,19 @@ def transcribe(payload: dict) -> dict:
 
     if _use_faster_whisper:
         lang_arg = None if (not language or language == "auto") else language
-        fw_segments, info = model.transcribe(audio_path, language=lang_arg, task="transcribe")
+        fw_segments, info = model.transcribe(
+            audio_path,
+            language=lang_arg,
+            task="transcribe",
+            beam_size=5,
+            # Skip silent / noise-only regions so Whisper doesn't hallucinate.
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+            # Feed previous chunk text so the model can resolve homophones and
+            # carry over proper nouns across chunk boundaries.
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=initial_prompt is not None,
+        )
         segments = []
         for seg in fw_segments:
             segments.append({
@@ -71,6 +87,8 @@ def transcribe(payload: dict) -> dict:
         options = {"task": "transcribe", "verbose": False, "fp16": False}
         if language and language != "auto":
             options["language"] = language
+        if initial_prompt:
+            options["initial_prompt"] = initial_prompt
         result = model.transcribe(audio_path, **options)
         segments = []
         for seg in result.get("segments", []):

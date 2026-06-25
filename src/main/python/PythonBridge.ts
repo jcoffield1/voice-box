@@ -27,9 +27,12 @@ const REQUEST_TIMEOUT_MS = 120_000
 
 /** Per-process overrides for requests that are known to be slow.
  *  Diarization runs a full neural speaker-separation pipeline on CPU/MPS and
- *  can take 3–8 minutes for longer recordings — 2 minutes is far too short. */
+ *  can take 3–8 minutes for longer recordings — 2 minutes is far too short.
+ *  Transcribe overrides apply to full-file reprocessing (transcribeAudioFile);
+ *  real-time 10s chunks still complete in seconds and are unaffected. */
 const PROCESS_TIMEOUT_MS: Partial<Record<PythonScriptName, number>> = {
-  diarize: 600_000, // 10 minutes
+  diarize:    600_000, // 10 minutes
+  transcribe: 600_000, // 10 minutes — large-v3-turbo at ~3x real-time = ~10 min for a 30-min recording
 }
 
 interface QueuedSend {

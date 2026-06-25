@@ -50,6 +50,7 @@ export default function LiveRecordingModal({ onClose }: Props) {
     isRecording, isPaused, audioLevel, activeRecordingId,
     liveSegments, startRecording, stopRecording, pauseRecording, resumeRecording, updateLiveSegment
   } = useRecordingStore()
+  const isAnyProcessing = useRecordingStore((s) => s.recordings.some((r) => r.status === 'processing'))
   const { selectedInputDeviceId, audioDevices } = useSettingsStore()
   const micPreviewLevel = useMicPreview(selectedInputDeviceId, !isRecording && !starting)
 
@@ -238,7 +239,7 @@ export default function LiveRecordingModal({ onClose }: Props) {
                 placeholder="Recording title (optional)"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !starting) void handleStart() }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !starting && !isAnyProcessing) void handleStart() }}
                 autoFocus
               />
 
@@ -363,10 +364,11 @@ export default function LiveRecordingModal({ onClose }: Props) {
               <button
                 className="btn-primary"
                 onClick={() => void handleStart()}
-                disabled={starting}
+                disabled={starting || isAnyProcessing}
+                title={isAnyProcessing ? 'A recording is being processed — please wait' : undefined}
               >
                 <Mic className="w-4 h-4" />
-                {starting ? 'Starting…' : 'Start Recording'}
+                {starting ? 'Starting…' : isAnyProcessing ? 'Processing…' : 'Start Recording'}
               </button>
               <button className="btn-ghost" onClick={onClose}>
                 Cancel

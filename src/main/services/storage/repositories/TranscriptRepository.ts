@@ -96,6 +96,13 @@ export class TranscriptRepository {
     return this.findById(id)
   }
 
+  /** Update segment text from the LLM refinement pass without marking it as user-edited. */
+  refineText(id: string, text: string): void {
+    this.db
+      .prepare(`UPDATE transcript_segments SET text = ? WHERE id = ? AND is_edited = 0`)
+      .run(text, id)
+  }
+
   /** Retroactively assign a speaker name to all segments with a given speakerId in a recording */
   assignSpeakerToRecording(recordingId: string, speakerId: string, speakerName: string): number {
     const result = this.db

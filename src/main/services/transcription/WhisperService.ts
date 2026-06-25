@@ -22,10 +22,15 @@ export interface TranscriptionResult {
   chunkDurationSeconds: number
 }
 
-const CHUNK_DURATION_MS = 5000 // 5 second windows
+// 10-second windows give Whisper enough context to disambiguate words at chunk
+// boundaries and reduce hallucinations — at the cost of ~5s extra latency vs 5s chunks.
+const CHUNK_DURATION_MS = 10000
 const SAMPLE_RATE = 16000
 const CHANNELS = 1
 const BYTES_PER_SAMPLE = 2 // 16-bit PCM
+// How many characters of recent transcript text to feed back as initial_prompt.
+// ~224 chars ≈ 2-3 sentences — enough for context without exceeding Whisper's prompt budget.
+const MAX_CONTEXT_CHARS = 224
 
 /**
  * Accumulates raw PCM chunks, writes them to temp WAV files,
@@ -34,14 +39,27 @@ const BYTES_PER_SAMPLE = 2 // 16-bit PCM
 export class WhisperService {
   private buffer: Buffer[] = []
   private bufferDurationMs = 0
-  private modelSize = 'base'
+  private modelSize = 'large-v3-turbo'
   private language: string | null = null
+  /** Rolling window of recent transcript text passed as initial_prompt to each chunk. */
+  private recentContext = ''
+  /** Static header prepended to every initial_prompt: meeting title + participant names.
+   *  Primes Whisper to transcribe known proper nouns correctly. */
+  private vocabHint = ''
 
   constructor(private readonly bridge: PythonBridge) {}
 
   configure(modelSize: string, language?: string): void {
     this.modelSize = modelSize
     this.language = language ?? null
+  }
+
+  /** Set meeting-level vocabulary hints so Whisper prioritises known proper nouns. */
+  setVocabHints(title: string, speakerNames: string[]): void {
+    const parts: string[] = []
+    if (title) parts.push(`Meeting: ${title}.`)
+    if (speakerNames.length > 0) parts.push(`Participants: ${speakerNames.join(', ')}.`)
+    this.vocabHint = parts.join(' ')
   }
 
   /**
@@ -79,11 +97,20 @@ export class WhisperService {
 
     const wavPath = this.writeWavTmp(combined)
     try {
+      // Combine the static vocab hint (meeting title + speaker names) with the
+      // rolling recent-transcript context.  Whisper uses this to bias recognition
+      // toward known proper nouns and to maintain sentence continuity across chunks.
+      const prompt = [this.vocabHint, this.recentContext].filter(Boolean).join(' ') || undefined
       const response = await this.bridge.send<TranscribeResponse>('transcribe', 'transcribe', {
         audio_path: wavPath,
         model_size: this.modelSize,
-        language: this.language ?? 'auto'
+        language: this.language ?? 'auto',
+        initial_prompt: prompt
       })
+
+      // Update rolling context so the next chunk benefits from what was just said.
+      const chunkText = response.segments.map((s) => s.text).join(' ')
+      this.recentContext = (this.recentContext + ' ' + chunkText).slice(-MAX_CONTEXT_CHARS).trim()
 
       onResult({
         segments: response.segments,
@@ -99,6 +126,8 @@ export class WhisperService {
   reset(): void {
     this.buffer = []
     this.bufferDurationMs = 0
+    this.recentContext = ''
+    this.vocabHint = ''
   }
 
   /**

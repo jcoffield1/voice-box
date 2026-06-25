@@ -16,7 +16,8 @@ import type {
   GetModelsArgs,
   GetModelsResult,
   TestProviderArgs,
-  TestProviderResult
+  TestProviderResult,
+  PullModelArgs
 } from '@shared/ipc-types'
 import type { LLMService } from '../services/llm/LLMService'
 import type { ConversationRepository } from '../services/storage/repositories/ConversationRepository'
@@ -287,6 +288,18 @@ ${ragContext}`
       return { available }
     } catch (err) {
       return { available: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.ai.pullModel, async (_event, args: PullModelArgs): Promise<void> => {
+    const wc = getWebContents()
+    try {
+      for await (const progress of llm.pullOllamaModel(args.model)) {
+        wc?.send(IPC.ai.pullProgress, { model: args.model, ...progress })
+      }
+      wc?.send(IPC.ai.pullDone, { model: args.model })
+    } catch (err) {
+      wc?.send(IPC.ai.pullError, { model: args.model, error: err instanceof Error ? err.message : String(err) })
     }
   })
 }
