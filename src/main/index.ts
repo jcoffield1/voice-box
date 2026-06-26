@@ -259,7 +259,12 @@ function initServices(): void {
     const diarResult = await pythonBridge.send<{ segments: DiarizationSegment[] }>(
       'diarize',
       'diarize',
-      { audio_path: audioPath }
+      {
+        audio_path: audioPath,
+        // Tell pyannote exactly how many clusters to find when we know the
+        // speaker count — this dramatically improves diarization accuracy.
+        num_speakers: expectedSpeakerIds?.length ? expectedSpeakerIds.length : undefined
+      }
     )
 
     if (!diarResult.segments.length) {

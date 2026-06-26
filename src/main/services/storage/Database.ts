@@ -437,6 +437,13 @@ Be thorough — this is the complete record of the conversation.',
         PRIMARY KEY (recording_id, speaker_id)
       );
     `
+  },
+  {
+    version: 16,
+    name: 'add_diarization_speaker_id_to_transcript_segments',
+    up: `
+      ALTER TABLE transcript_segments ADD COLUMN diarization_speaker_id TEXT;
+    `
   }
 ]
 

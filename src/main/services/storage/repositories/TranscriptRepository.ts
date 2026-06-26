@@ -363,16 +363,87 @@ export class TranscriptRepository {
     return result.changes
   }
 
-  /** Set the raw diarization label (e.g. SPEAKER_00) on a single segment. */
+  /** Set the raw diarization label (e.g. SPEAKER_00) on a single segment.
+   *  Always writes diarization_speaker_id so the cluster can be traced even
+   *  after speaker_id is resolved to a profile UUID. */
   setRawSpeakerId(segmentId: string, rawSpeakerId: string): void {
     this.db
       .prepare(
         `UPDATE transcript_segments
-         SET speaker_id = ?, speaker_name = ?
+         SET speaker_id = ?, speaker_name = ?, diarization_speaker_id = ?
          WHERE id = ?
            AND (speaker_id IS NULL OR speaker_id LIKE 'SPEAKER_%')`
       )
-      .run(rawSpeakerId, rawSpeakerId, segmentId)
+      .run(rawSpeakerId, rawSpeakerId, rawSpeakerId, segmentId)
+  }
+
+  /** Return the raw diarization cluster label (e.g. SPEAKER_00) for a segment,
+   *  or null if the segment was never stamped by diarization. */
+  getDiarizationLabel(segmentId: string): string | null {
+    type Row = { diarization_speaker_id: string | null }
+    const row = this.db
+      .prepare<string, Row>(
+        `SELECT diarization_speaker_id FROM transcript_segments WHERE id = ?`
+      )
+      .get(segmentId)
+    return row?.diarization_speaker_id ?? null
+  }
+
+  /**
+   * Bulk-assign a speaker to all segments in the same diarization cluster,
+   * skipping any that were manually confirmed by the user (speaker_confidence IS NULL
+   * with a real profile id). Only non-manually-confirmed segments are updated so
+   * that user corrections within the cluster are respected.
+   */
+  assignSpeakerByDiarizationCluster(
+    recordingId: string,
+    diarizationLabel: string,
+    profileId: string,
+    speakerName: string
+  ): number {
+    const result = this.db
+      .prepare(
+        `UPDATE transcript_segments
+         SET speaker_id = ?, speaker_name = ?, speaker_confidence = NULL
+         WHERE recording_id = ?
+           AND diarization_speaker_id = ?
+           AND NOT (
+             speaker_id IS NOT NULL
+             AND speaker_id NOT LIKE 'SPEAKER_%'
+             AND speaker_confidence IS NULL
+           )`
+      )
+      .run(profileId, speakerName, recordingId, diarizationLabel)
+    return result.changes
+  }
+
+  /** Return segments auto-assigned with confidence below the given threshold
+   *  (i.e. candidates for re-evaluation after a new embedding is learned).
+   *  Manually confirmed segments (speaker_confidence IS NULL on a real profile)
+   *  are excluded so user choices are never overwritten. */
+  findBelowThresholdAssignedSegments(
+    recordingId: string,
+    maxConfidence: number
+  ): Array<{ id: string; timestampStart: number; timestampEnd: number; currentConfidence: number }> {
+    type Row = { id: string; timestamp_start: number; timestamp_end: number; speaker_confidence: number }
+    return (this.db
+      .prepare<[string, number], Row>(
+        `SELECT id, timestamp_start, timestamp_end, speaker_confidence
+         FROM transcript_segments
+         WHERE recording_id = ?
+           AND speaker_confidence IS NOT NULL
+           AND speaker_confidence < ?
+           AND speaker_id IS NOT NULL
+           AND speaker_id NOT LIKE 'SPEAKER_%'
+         ORDER BY timestamp_start ASC`
+      )
+      .all(recordingId, maxConfidence) as Row[])
+      .map((r) => ({
+        id: r.id,
+        timestampStart: r.timestamp_start,
+        timestampEnd: r.timestamp_end,
+        currentConfidence: r.speaker_confidence,
+      }))
   }
 
   saveEmbedding(segmentId: string, embedding: number[]): void {

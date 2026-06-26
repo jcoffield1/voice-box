@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, useState } from 'react'
+import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
 import { useTranscript } from '../../hooks/useTranscript'
 import { useTranscriptStore } from '../../store/transcriptStore'
 import { useRecordingStore } from '../../store/recordingStore'
@@ -44,6 +44,10 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
   const [reviewMode, setReviewMode] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchIdx, setSearchIdx] = useState(0)
+  const [flashedIds, setFlashedIds] = useState<Set<string>>(new Set())
+
+  // Snapshot of speaker assignments used to detect which segments changed after a sweep
+  const speakerSnapshotRef = useRef<Map<string, string | null>>(new Map())
   const diarizationError = useRecordingStore((s) => s.diarizationError)
   const setDiarizationError = useRecordingStore((s) => s.setDiarizationError)
   const postProcessingRecordingId = useRecordingStore((s) => s.postProcessingRecordingId)
@@ -59,6 +63,31 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
     })
     return () => { removeDone() }
   }, [isLive, recordingId])
+
+  // Keep a snapshot of speaker assignments so we can diff after a sweep
+  useEffect(() => {
+    speakerSnapshotRef.current = new Map(displaySegments.map((s) => [s.id, s.speakerId]))
+  }, [displaySegments])
+
+  // Flash segments whose speaker changed as a result of a background sweep
+  const flashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const handleSweepFlash = useCallback(({ recordingId: rid, segments: newSegs }: { recordingId: string; segments: TranscriptSegment[] }) => {
+    if (rid !== recordingId || isLive) return
+    const snapshot = speakerSnapshotRef.current
+    const changedIds = newSegs
+      .filter((s) => snapshot.has(s.id) && snapshot.get(s.id) !== s.speakerId)
+      .map((s) => s.id)
+    if (changedIds.length === 0) return
+    setFlashedIds(new Set(changedIds))
+    if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current)
+    flashTimeoutRef.current = setTimeout(() => setFlashedIds(new Set()), 2000)
+  }, [recordingId, isLive])
+
+  useEffect(() => {
+    const remove = window.api.transcript.onSpeakersSwept(handleSweepFlash)
+    return () => { remove(); if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current) }
+  }, [handleSweepFlash])
+
   const bottomRef = useRef<HTMLDivElement>(null)
   const segmentRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
@@ -287,6 +316,7 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
               isAudioPlaying={!isLive ? isAudioPlaying : false}
               highlightQuery={trimmedQuery || undefined}
               isCurrentMatch={seg.id === activeMatchId}
+              isRecentlyUpdated={flashedIds.has(seg.id)}
             />
           </div>
         ))}

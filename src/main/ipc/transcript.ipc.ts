@@ -124,6 +124,39 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
       }
     }
 
+    // ── Borderline re-evaluation ─────────────────────────────────────────────
+    // Re-identify segments that were auto-assigned below the high-confidence
+    // cutoff. A newly learned embedding may now outscore the previous winner.
+    // Only overwrite when the new match is STRICTLY better — never downgrade.
+    // Manual confirmations (speaker_confidence IS NULL) are excluded by the
+    // repo query so user choices are always preserved.
+    const belowThreshold = transcriptRepo.findBelowThresholdAssignedSegments(
+      recordingId, AUTO_APPLY_CONFIDENCE_THRESHOLD
+    )
+    if (belowThreshold.length > 0) {
+      const batchInput = belowThreshold.map((s) => ({
+        id: s.id,
+        segments: [{ start: s.timestampStart, end: s.timestampEnd }],
+      }))
+      const resultsMap = await speakerIdService.identifyBatch(audioPath, batchInput, speakerFilter)
+
+      for (const seg of belowThreshold) {
+        const candidates = resultsMap.get(seg.id)
+        const best = candidates?.[0]
+        if (!best) continue
+        if (!speakerFilter?.length && best.confidence < AUTO_APPLY_CONFIDENCE_THRESHOLD) continue
+        // Strictly-better guard — never downgrade an existing auto-assignment
+        if (best.confidence <= seg.currentConfidence) continue
+        transcriptRepo.assignSpeakerToSegmentWithConfidence(
+          seg.id, best.speakerId, best.speakerName, best.confidence
+        )
+        updatedCount++
+        console.log(
+          `[SpeakerID] Borderline upgrade: seg ${seg.id} → "${best.speakerName}" ${Math.round(seg.currentConfidence * 100)}% → ${Math.round(best.confidence * 100)}%`
+        )
+      }
+    }
+
     // Push fresh segments to the renderer so it updates without polling
     if (updatedCount > 0) {
       const segments = transcriptRepo.findByRecordingId(recordingId)
@@ -208,52 +241,64 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
           })()
         }
       } else {
-        transcriptRepo.updateSpeakerForSegment(args.segmentId, speaker.id, speaker.name)
-        updated = 1
+        // Check for a diarization cluster label — if this segment was stamped by
+        // diarization, bulk-assign the whole cluster so all SPEAKER_00 siblings
+        // get the correction, not just the one the user clicked.
+        const diarizationLabel = transcriptRepo.getDiarizationLabel(args.segmentId)
+        const isFirstAppearance = transcriptRepo.findTimeRangesForProfile(args.recordingId, speaker.id).length === 0
+        if (diarizationLabel) {
+          updated = transcriptRepo.assignSpeakerByDiarizationCluster(
+            args.recordingId, diarizationLabel, speaker.id, speaker.name
+          )
+          console.log(
+            `[SpeakerID] Cluster ${diarizationLabel} → "${speaker.name}" (${updated} segment${updated !== 1 ? 's' : ''})`
+          )
+        } else {
+          transcriptRepo.updateSpeakerForSegment(args.segmentId, speaker.id, speaker.name)
+          updated = 1
+        }
         // Increment recording count only on the speaker's first appearance in this recording
-        const existing = transcriptRepo.findTimeRangesForProfile(args.recordingId, speaker.id)
-        if (existing.length === 1) {
+        if (isFirstAppearance && updated > 0) {
           speakerRepo.incrementRecordingCount(speaker.id)
         }
         // Learn embedding then sweep — must not block the IPC response.
         const recording = recordingRepo.findById(args.recordingId)
-        if (recording?.audioPath || audio) {
-          const segment = transcriptRepo.findByRecordingId(args.recordingId)
-            .find((s) => s.id === args.segmentId)
-          if (segment) {
-            void (async () => {
-              let audioPath = recording?.audioPath ?? null
-              let isSnapshot = false
-              if (!audioPath && audio) {
-                const snapshotPath = join(tmpdir(), `vb-snapshot-${args.recordingId}.wav`)
-                try {
-                  audio.saveSnapshot(snapshotPath)
-                  audioPath = snapshotPath
-                  isSnapshot = true
-                } catch (err) {
-                  console.warn('[SpeakerID] Could not save audio snapshot:', (err as Error).message)
-                }
-              }
-              if (!audioPath) return
+        if (updated > 0 && (recording?.audioPath || audio)) {
+          void (async () => {
+            let audioPath = recording?.audioPath ?? null
+            let isSnapshot = false
+            if (!audioPath && audio) {
+              const snapshotPath = join(tmpdir(), `vb-snapshot-${args.recordingId}.wav`)
               try {
-                await speakerIdService.learnSpeaker(speaker.id, audioPath, [
-                  { start: segment.timestampStart, end: segment.timestampEnd }
-                ])
-                console.log(`[SpeakerID] Voice embedding learned for "${speaker.name}" (1 segment)`)
+                audio.saveSnapshot(snapshotPath)
+                audioPath = snapshotPath
+                isSnapshot = true
               } catch (err) {
-                console.error('[SpeakerID] learnSpeaker (single segment) failed (embedding not stored):', (err as Error).message)
+                console.warn('[SpeakerID] Could not save audio snapshot:', (err as Error).message)
+              }
+            }
+            if (!audioPath) return
+            // Learn from all confirmed time ranges (cluster assignment may have
+            // added several segments; use them all for a richer embedding).
+            const timeRanges = transcriptRepo.findTimeRangesForProfile(args.recordingId, speaker.id)
+            if (timeRanges.length > 0) {
+              try {
+                await speakerIdService.learnSpeaker(speaker.id, audioPath, timeRanges)
+                console.log(`[SpeakerID] Voice embedding learned for "${speaker.name}" (${timeRanges.length} segment${timeRanges.length !== 1 ? 's' : ''})`)
+              } catch (err) {
+                console.error('[SpeakerID] learnSpeaker failed (embedding not stored):', (err as Error).message)
                 if (isSnapshot) try { unlinkSync(audioPath) } catch { /* ignore */ }
                 return
               }
-              // Sweep all unresolved clusters now that a new embedding is stored
-              try {
-                await sweepUnresolvedClusters(args.recordingId, audioPath)
-              } catch (err) {
-                console.warn('[SpeakerID] Cross-cluster sweep failed:', (err as Error).message)
-              }
-              if (isSnapshot) try { unlinkSync(audioPath) } catch { /* ignore */ }
-            })()
-          }
+            }
+            // Sweep unresolved clusters + borderline segments with the updated embedding
+            try {
+              await sweepUnresolvedClusters(args.recordingId, audioPath)
+            } catch (err) {
+              console.warn('[SpeakerID] Cross-cluster sweep failed:', (err as Error).message)
+            }
+            if (isSnapshot) try { unlinkSync(audioPath) } catch { /* ignore */ }
+          })()
         }
       }
 

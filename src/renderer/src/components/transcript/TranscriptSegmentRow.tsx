@@ -21,6 +21,8 @@ interface Props {
   highlightQuery?: string
   /** When true, render a stronger ring around this row (active search match). */
   isCurrentMatch?: boolean
+  /** When true, briefly highlight this row because the speaker was auto-updated by a sweep. */
+  isRecentlyUpdated?: boolean
 }
 
 function formatTime(ms: number) {
@@ -57,7 +59,7 @@ function renderHighlighted(text: string, query: string | undefined): React.React
   return parts
 }
 
-export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playbackSeconds, onSeek, onPause, onResume, isAudioPlaying, highlightQuery, isCurrentMatch }: Props) {
+export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playbackSeconds, onSeek, onPause, onResume, isAudioPlaying, highlightQuery, isCurrentMatch, isRecentlyUpdated }: Props) {
   const [editing, setEditing] = useState(false)
   const [draftText, setDraftText] = useState(segment.text)
   const editSegment = useTranscriptStore((s) => s.editSegment)
@@ -79,12 +81,14 @@ export default function TranscriptSegmentRow({ segment, onLabelSpeaker, playback
   }
 
   return (
-    <div className={`group flex gap-3 py-2 px-2 rounded-lg transition-colors ${
-      isCurrentMatch
+    <div className={`group flex gap-3 py-2 px-2 rounded-lg transition-colors duration-700 ${
+      isRecentlyUpdated
+        ? 'bg-emerald-500/15 border border-emerald-500/25'
+        : isCurrentMatch
         ? 'bg-amber-500/15 ring-2 ring-amber-400/70'
         : isActive
-          ? 'bg-accent/10 border border-accent/20'
-          : 'hover:bg-surface-700/50'
+        ? 'bg-accent/10 border border-accent/20'
+        : 'border border-transparent hover:bg-surface-700/50'
     }`}>
       {/* Timestamp / play‑pause + replay buttons */}
       <div className="w-12 shrink-0 pt-0.5">
