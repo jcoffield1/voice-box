@@ -151,6 +151,10 @@ function initServices(): void {
   const settingsRepo = new SettingsRepository(db)
   const templateRepo = new SummaryTemplateRepository(db)
 
+  // Any recording left in 'processing' from a previous session (e.g. app quit
+  // mid-pipeline) would permanently block the New Recording button. Reset them.
+  db.prepare(`UPDATE recordings SET status = 'error' WHERE status = 'processing'`).run()
+
   // LLM / Embedding
   const llmService = new LLMService(settingsRepo)
   const embeddingService = new EmbeddingService(llmService, transcriptRepo, settingsRepo)

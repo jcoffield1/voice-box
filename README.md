@@ -31,11 +31,14 @@ A local-first Electron desktop application for macOS that records calls and meet
 | **Real-time transcription** | Chunked Whisper transcription via local Python subprocess |
 | **Speaker diarization** | Pyannote.audio identifies and labels individual speakers |
 | **Speaker profiles** | Voice embeddings auto-match returning speakers across recordings |
+| **Transcript refinement** | Optional LLM pass corrects Whisper errors in proper nouns and speaker names |
 | **Semantic search** | Vector similarity search over your entire transcript corpus |
 | **Conversational AI** | Ask questions about any recording or across all recordings |
 | **Auto-debrief** | Structured meeting summary auto-generated after each recording |
 | **Export** | Export transcripts as plain text, Markdown, or SRT subtitles |
 | **LLM flexibility** | Swap between Ollama (local), Claude API, and OpenAI API at runtime |
+| **Model hints** | Settings shows recommended Ollama models per feature with one-click pull |
+| **Audio import** | Import existing audio files for transcription and analysis |
 | **TTS playback** | AI responses and transcript segments read aloud via macOS voices |
 
 ---
@@ -149,6 +152,7 @@ voice-box/
 │   │       │   ├── SpeakersPage.tsx
 │   │       │   └── SettingsPage.tsx
 │   │       ├── components/     # Shared UI components
+│   │       ├── data/           # Static data (modelHints.ts)
 │   │       └── store/          # Zustand state stores
 │   ├── preload/                # Electron contextBridge (typed IPC exposure)
 │   └── shared/
@@ -201,6 +205,20 @@ Main Process (Node.js)
 - The LLM layer is fully swappable at runtime — `LLMService.complete(feature, request)` picks the right provider from settings automatically.
 - The renderer never touches the filesystem or native APIs directly.
 
+### Post-recording pipeline
+
+After a recording ends (or when a recording is manually reprocessed), the main process runs `runPostRecordingPipeline`, which:
+
+1. Runs full-file Whisper transcription for improved accuracy
+2. Runs Pyannote diarization to assign speaker IDs
+3. Matches speakers against stored voice profiles
+4. Optionally runs an LLM transcript-refinement pass (corrects proper nouns and speaker names)
+5. Rebuilds search embeddings for all segments via `embeddingService.indexAll()`
+6. Generates a meeting debrief summary
+7. Signals the renderer that processing is complete
+
+The "New Recording" button is disabled while any recording has `status === 'processing'` to prevent concurrent pipeline runs.
+
 ---
 
 ## Configuration & settings
@@ -220,8 +238,26 @@ All settings are persisted to the local SQLite database (not `~/.env`). Open **S
 ### Using Ollama (recommended for full local operation)
 
 1. Install [Ollama](https://ollama.ai) and start it: `ollama serve`
-2. Pull a model: `ollama pull llama3` (or any model you prefer)
-3. In Settings → LLM Provider, select **Ollama** and set the model name
+2. In Settings → LLM Providers, each feature shows a recommended model with a **Pull** button — click it to download directly from within the app
+3. Select the model in the feature's dropdown once the pull completes
+
+**Recommended models by feature:**
+
+| Feature | Recommended model | Size |
+|---|---|---|
+| Chat / Q&A | `llama3.1:8b` | ~4.7 GB |
+| Summarization | `llama3.1:8b` | ~4.7 GB |
+| Intent detection | `phi4-mini` | ~2.5 GB |
+| Semantic search embeddings | `nomic-embed-text` | ~274 MB |
+| Transcript refinement | `llama3.1:8b` | ~4.7 GB |
+
+### Transcript refinement
+
+If a model is configured for the **Transcript refinement** feature, VoiceBox runs an extra LLM pass after Whisper transcription to fix common errors in proper nouns, speaker names, and technical terms. Set it to an empty/unset model to skip this pass.
+
+### Audio import
+
+Use **Import Audio** on the Dashboard to add existing audio files (MP3, WAV, M4A, etc.) for transcription and analysis. The file is processed through the same post-recording pipeline as live recordings.
 
 ---
 
@@ -320,3 +356,8 @@ Install [BlackHole 2ch](https://existential.audio/blackhole/), then create a Mul
 **Ollama responses time out**
 Ensure Ollama is running (`ollama serve`) and the model is pulled (`ollama list`). Check the base URL in Settings matches your Ollama instance (default: `http://localhost:11434`).
 
+**Reprocessing a recording seems to hang**
+Each reprocess run has a per-segment timeout on the diarization step. If diarization exceeds the timeout, the pipeline continues without diarization results for that segment rather than hanging indefinitely. Check the console for `[PostPipeline]` log lines to track progress.
+
+**Duration shows `--:--` after playback starts**
+WAV files recorded without a known final size report `Infinity` for duration. The player uses the database-stored duration (in seconds) as the authoritative display value and ignores the non-finite value from the audio element.
