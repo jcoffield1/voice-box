@@ -154,6 +154,10 @@ export default function SpeakerLabelModal({ segment, onClose, onSaved }: Props) 
 
   const canSave = (canCreateNew && q.length > 0) || selected != null
 
+  const MAX_SEARCH_RESULTS = 15
+  const displayedResults = searchResults.slice(0, MAX_SEARCH_RESULTS)
+  const hiddenResultCount = searchResults.length - displayedResults.length
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -228,7 +232,7 @@ export default function SpeakerLabelModal({ segment, onClose, onSaved }: Props) 
                     {/* Confidence bar */}
                     {rankLoading ? (
                       <div className="h-1 bg-surface-600 rounded-full animate-pulse w-full" />
-                    ) : (
+                    ) : isVoiceMatch ? (
                       <div className="space-y-0.5 w-full">
                         <div className="h-1.5 bg-surface-600 rounded-full overflow-hidden">
                           <div
@@ -237,14 +241,14 @@ export default function SpeakerLabelModal({ segment, onClose, onSaved }: Props) 
                           />
                         </div>
                         <div className="flex items-center justify-between">
-                          <span className={`text-[10px] font-mono ${isVoiceMatch ? confidenceTextColor(confidence) : 'text-zinc-600'}`}>
-                            {isVoiceMatch ? `${barPct}%` : '—'}
+                          <span className={`text-[10px] font-mono ${confidenceTextColor(confidence)}`}>
+                            {barPct}%
                           </span>
-                          {isVoiceMatch && (
-                            <span className="text-[10px] text-zinc-600">voice match</span>
-                          )}
+                          <span className="text-[10px] text-zinc-600">voice match</span>
                         </div>
                       </div>
+                    ) : (
+                      <span className="text-[10px] text-zinc-600">no voice data yet</span>
                     )}
                   </button>
                 )
@@ -283,12 +287,12 @@ export default function SpeakerLabelModal({ segment, onClose, onSaved }: Props) 
               {rankLoading && (
                 <p className="text-xs text-zinc-600 px-1">Analysing voice…</p>
               )}
-              {searchResults.map(({ profile: sp, confidence, isVoiceMatch }) => {
+              {displayedResults.map(({ profile: sp, confidence, isVoiceMatch }) => {
                 const isActive = selected?.id === sp.id
                 return (
                   <button
                     key={sp.id}
-                    onClick={() => { setSelected(sp); setQuery('') }}
+                    onClick={() => { setSelected(sp); setQuery(sp.name) }}
                     className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-colors text-sm ${
                       isActive
                         ? 'bg-accent/20 border border-accent/40 text-zinc-100'
@@ -305,6 +309,9 @@ export default function SpeakerLabelModal({ segment, onClose, onSaved }: Props) 
                   </button>
                 )
               })}
+              {hiddenResultCount > 0 && (
+                <p className="text-xs text-zinc-600 px-1 py-1">{hiddenResultCount} more — type to narrow results</p>
+              )}
               {q.length > 0 && searchResults.length === 0 && !canCreateNew && (
                 <p className="text-xs text-zinc-600 px-1">No speakers found</p>
               )}

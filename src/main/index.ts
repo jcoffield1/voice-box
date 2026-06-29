@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell, globalShortcut, protocol, net, systemPreferences } from 'electron'
-import { join } from 'path'
+import { join, extname } from 'path'
 import { pathToFileURL } from 'url'
-import { appendFileSync, existsSync, mkdirSync, unlinkSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, unlinkSync, statSync, createReadStream } from 'fs'
 import { tmpdir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { initDatabase, closeDatabase, getDatabase } from './services/storage/Database'
@@ -851,6 +851,15 @@ function initServices(): void {
       console.warn('[PostPipeline] Search re-embedding failed (non-fatal):', (embedErr as Error).message)
     }
 
+    // Ensure the recording ends up in 'complete' state. The reprocess handler
+    // sets 'complete' explicitly before calling this pipeline, but reDiarize
+    // only sets 'processing' — without this update the recording would stay
+    // 'processing' and be reset to 'error' on the next app startup.
+    const rec = recordingRepo.findById(recordingId)
+    if (rec?.status === 'processing') {
+      recordingRepo.update(recordingId, { status: 'complete' })
+    }
+
     // Signal that the full post-recording pipeline is done — always fires so
     // the renderer clears the "Analyzing recording…" banner regardless of
     // whether diarization/debrief succeeded or there were no segments.
@@ -903,6 +912,20 @@ function initServices(): void {
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
+function getAudioMimeType(filePath: string): string {
+  const ext = extname(filePath).toLowerCase()
+  return ({
+    '.m4a': 'audio/mp4',
+    '.mp4': 'audio/mp4',
+    '.wav': 'audio/wav',
+    '.mp3': 'audio/mpeg',
+    '.aac': 'audio/aac',
+    '.ogg': 'audio/ogg',
+    '.webm': 'audio/webm',
+    '.flac': 'audio/flac',
+  } as Record<string, string>)[ext] ?? 'application/octet-stream'
+}
+
 app.whenReady().then(() => {
   setupFileLogger()
   console.log('[App] whenReady fired')
@@ -911,14 +934,59 @@ app.whenReady().then(() => {
   // Register vbfile:// protocol to serve local audio files to the renderer.
   // URLs are always of the form vbfile://localhost<absolute-path> so that
   // Chromium never confuses the path with a URL authority/hostname.
-  protocol.handle('vbfile', (request) => {
+  // Range requests are handled manually — net.fetch(file://) ignores Range
+  // headers and always returns 200, which breaks audio seeking in the player.
+  protocol.handle('vbfile', async (request) => {
     const url = new URL(request.url)
     const filePath = decodeURIComponent(url.pathname)
-    // Forward Range header so the browser can seek and determine duration
-    const init: RequestInit = {}
-    const range = request.headers.get('range')
-    if (range) init.headers = { range }
-    return net.fetch(pathToFileURL(filePath).href, init)
+
+    let fileSize: number
+    try {
+      fileSize = statSync(filePath).size
+    } catch {
+      return new Response(null, { status: 404 })
+    }
+
+    const mimeType = getAudioMimeType(filePath)
+    const rangeHeader = request.headers.get('range')
+
+    const makeWebStream = (start: number, end: number) => {
+      const nodeStream = createReadStream(filePath, { start, end })
+      return new ReadableStream({
+        start(controller) {
+          nodeStream.on('data', (chunk) => controller.enqueue(chunk instanceof Buffer ? chunk : Buffer.from(chunk as string)))
+          nodeStream.on('end', () => controller.close())
+          nodeStream.on('error', (err) => controller.error(err))
+        },
+        cancel() { nodeStream.destroy() }
+      })
+    }
+
+    if (rangeHeader) {
+      const match = rangeHeader.match(/bytes=(\d*)-(\d*)/)
+      if (match) {
+        const start = match[1] ? parseInt(match[1], 10) : 0
+        const end = match[2] ? Math.min(parseInt(match[2], 10), fileSize - 1) : fileSize - 1
+        return new Response(makeWebStream(start, end), {
+          status: 206,
+          headers: {
+            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': String(end - start + 1),
+            'Content-Type': mimeType,
+          }
+        })
+      }
+    }
+
+    return new Response(makeWebStream(0, fileSize - 1), {
+      status: 200,
+      headers: {
+        'Accept-Ranges': 'bytes',
+        'Content-Length': String(fileSize),
+        'Content-Type': mimeType,
+      }
+    })
   })
 
   app.on('browser-window-created', (_, window) => {

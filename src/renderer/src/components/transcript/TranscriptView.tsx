@@ -328,19 +328,24 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
           segment={assignTarget}
           onClose={() => setAssignTarget(null)}
           onSaved={async ({ speakerName, profileId }) => {
-            await window.api.transcript.assignSpeaker({
-              recordingId,
-              segmentId: assignTarget.id,
-              speakerId: assignTarget.speakerId ?? null,
-              speakerName,
-              profileId
-            })
-            // Update the segment optimistically in the store — no full reload so
-            // scroll position is preserved. The background sweep will push any
-            // additional auto-assignments via speakersSwept.
-            const store = useTranscriptStore.getState()
-            store.updateSegment({ ...assignTarget, speakerName, speakerId: profileId ?? assignTarget.speakerId ?? speakerName })
-            setAssignTarget(null)
+            try {
+              await window.api.transcript.assignSpeaker({
+                recordingId,
+                segmentId: assignTarget.id,
+                speakerId: assignTarget.speakerId ?? null,
+                speakerName,
+                profileId
+              })
+              // Update the segment optimistically in the store — no full reload so
+              // scroll position is preserved. The background sweep will push any
+              // additional auto-assignments via speakersSwept.
+              const store = useTranscriptStore.getState()
+              store.updateSegment({ ...assignTarget, speakerName, speakerId: profileId ?? assignTarget.speakerId ?? speakerName })
+            } catch (err) {
+              console.error('[TranscriptView] assignSpeaker failed:', err)
+            } finally {
+              setAssignTarget(null)
+            }
           }}
         />
       )}

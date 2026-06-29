@@ -143,26 +143,35 @@ export default function LiveRecordingModal({ onClose }: Props) {
     speakerName,
     profileId
   }: { speakerName: string; profileId?: string }) => {
-    if (!assignTarget || !activeRecordingId) return
-    await window.api.transcript.assignSpeaker({
-      recordingId: activeRecordingId,
-      segmentId: assignTarget.id,
-      speakerId: assignTarget.speakerId ?? null,
-      speakerName,
-      profileId
-    })
-    // Optimistically update the segment in the live list
-    updateLiveSegment(assignTarget.id, {
-      speakerName,
-      speakerId: profileId ?? null
-    })
-    // Keep transcript store in sync too
-    useTranscriptStore.getState().updateSegment({
-      ...assignTarget,
-      speakerName,
-      speakerId: profileId ?? null
-    })
-    setAssignTarget(null)
+    if (!assignTarget || !activeRecordingId) {
+      console.warn('[LiveRecordingModal] handleAssignSave called without assignTarget or activeRecordingId')
+      setAssignTarget(null)
+      return
+    }
+    try {
+      await window.api.transcript.assignSpeaker({
+        recordingId: activeRecordingId,
+        segmentId: assignTarget.id,
+        speakerId: assignTarget.speakerId ?? null,
+        speakerName,
+        profileId
+      })
+      // Optimistically update the segment in the live list
+      updateLiveSegment(assignTarget.id, {
+        speakerName,
+        speakerId: profileId ?? null
+      })
+      // Keep transcript store in sync too
+      useTranscriptStore.getState().updateSegment({
+        ...assignTarget,
+        speakerName,
+        speakerId: profileId ?? null
+      })
+    } catch (err) {
+      console.error('[LiveRecordingModal] assignSpeaker failed:', err)
+    } finally {
+      setAssignTarget(null)
+    }
   }, [assignTarget, activeRecordingId, updateLiveSegment])
 
   return (
