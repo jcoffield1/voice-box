@@ -428,7 +428,10 @@ Be thorough — this is the complete record of the conversation.',
     `
   },
   {
-    version: 15,
+    // Versions 15-17 were used by a TTS feature that has since been removed.
+    // These migrations are preserved in the DB but not in source. Start new
+    // migrations at 18 to avoid re-using those version numbers.
+    version: 18,
     name: 'create_recording_expected_speakers',
     up: `
       CREATE TABLE IF NOT EXISTS recording_expected_speakers (
@@ -439,7 +442,7 @@ Be thorough — this is the complete record of the conversation.',
     `
   },
   {
-    version: 16,
+    version: 19,
     name: 'add_diarization_speaker_id_to_transcript_segments',
     up: `
       ALTER TABLE transcript_segments ADD COLUMN diarization_speaker_id TEXT;

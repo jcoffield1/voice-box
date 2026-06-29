@@ -145,4 +145,11 @@ export class RecordingRepository {
       .all(recordingId)
     return rows.map((r) => r.speaker_id)
   }
+
+  /** Add a single speaker to the expected speakers list for a recording. No-ops if already present. */
+  addExpectedSpeaker(recordingId: string, speakerId: string): void {
+    this.db
+      .prepare(`INSERT OR IGNORE INTO recording_expected_speakers (recording_id, speaker_id) VALUES (?, ?)`)
+      .run(recordingId, speakerId)
+  }
 }

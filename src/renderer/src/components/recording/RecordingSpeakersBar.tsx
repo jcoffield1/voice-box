@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Users, Loader2, Pencil, RefreshCw, AlertTriangle } from 'lucide-react'
 import type { SpeakerProfile } from '@shared/types'
 import SpeakerPickerModal from './SpeakerPickerModal'
@@ -44,7 +44,7 @@ export default function RecordingSpeakersBar({ recordingId }: Props) {
   const storedSegments = useTranscriptStore((s) => s.segmentsByRecording[recordingId] ?? [])
   const segments = isLive ? liveSegments : storedSegments
 
-  useEffect(() => {
+  const refreshSpeakerData = useCallback(() => {
     Promise.all([
       window.api.speaker.getAll(),
       window.api.recording.getExpectedSpeakers({ recordingId })
@@ -58,16 +58,23 @@ export default function RecordingSpeakersBar({ recordingId }: Props) {
     })
   }, [recordingId])
 
-  // Clear sweeping indicator when pipeline finishes
+  useEffect(() => { refreshSpeakerData() }, [refreshSpeakerData])
+
+  // Clear sweeping indicator when pipeline finishes; re-fetch speaker data to
+  // pick up any profiles created during the sweep or manual assignment.
   useEffect(() => {
     const removeDiarDone = window.api.transcript.onDiarizationComplete(({ recordingId: rid }) => {
       if (rid === recordingId) setSweeping(false)
     })
     const removeSweptDone = window.api.transcript.onSpeakersSwept(({ recordingId: rid }) => {
-      if (rid === recordingId) { setSweeping(false); setReidentifying(false) }
+      if (rid === recordingId) {
+        setSweeping(false)
+        setReidentifying(false)
+        refreshSpeakerData()
+      }
     })
     return () => { removeDiarDone(); removeSweptDone() }
-  }, [recordingId])
+  }, [recordingId, refreshSpeakerData])
 
   const handleSave = async (ids: string[]) => {
     setModalOpen(false)
@@ -121,11 +128,19 @@ export default function RecordingSpeakersBar({ recordingId }: Props) {
 
   const hasStats = segments.length > 0
 
-  if (!loaded) return null
+  // Show expected speakers PLUS any speaker who has segments in this recording
+  // (e.g. added mid-way via manual assignment without being pre-configured).
+  const shownSpeakerIds = useMemo(() => {
+    const ids = new Set(expectedIds)
+    for (const id of stats.byId.keys()) ids.add(id)
+    return Array.from(ids)
+  }, [expectedIds, stats.byId])
 
-  const selectedSpeakers = expectedIds
+  const selectedSpeakers = shownSpeakerIds
     .map((id) => allSpeakers.find((s) => s.id === id))
     .filter(Boolean) as SpeakerProfile[]
+
+  if (!loaded) return null
 
   return (
     <>

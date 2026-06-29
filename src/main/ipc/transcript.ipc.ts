@@ -39,6 +39,55 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
   const sweepingRecordings = new Set<string>()
 
   /**
+   * Re-evaluate segments that were auto-assigned below the high-confidence
+   * threshold. Safe to call concurrently with sweepUnresolvedClusters because
+   * it only upgrades (strictly-better guard) and never calls
+   * speakerRepo.incrementRecordingCount, so duplicate runs are idempotent.
+   *
+   * Called standalone after every new embedding is learned so that segments
+   * don't stay pinned to a lower-confidence speaker even when the main cluster
+   * sweep is already running (and would be skipped by the mutex).
+   */
+  async function reEvaluateBelowThreshold(recordingId: string, audioPath: string): Promise<number> {
+    const expectedSpeakerIds = recordingRepo.getExpectedSpeakerIds(recordingId)
+    const speakerFilter = expectedSpeakerIds.length > 0 ? expectedSpeakerIds : undefined
+
+    const belowThreshold = transcriptRepo.findBelowThresholdAssignedSegments(
+      recordingId, AUTO_APPLY_CONFIDENCE_THRESHOLD
+    )
+    if (belowThreshold.length === 0) return 0
+
+    const batchInput = belowThreshold.map((s) => ({
+      id: s.id,
+      segments: [{ start: s.timestampStart, end: s.timestampEnd }],
+    }))
+    const resultsMap = await speakerIdService.identifyBatch(audioPath, batchInput, speakerFilter)
+
+    let upgradedCount = 0
+    for (const seg of belowThreshold) {
+      const candidates = resultsMap.get(seg.id)
+      const best = candidates?.[0]
+      if (!best) continue
+      if (!speakerFilter?.length && best.confidence < AUTO_APPLY_CONFIDENCE_THRESHOLD) continue
+      if (best.confidence <= seg.currentConfidence) continue
+      transcriptRepo.assignSpeakerToSegmentWithConfidence(
+        seg.id, best.speakerId, best.speakerName, best.confidence
+      )
+      upgradedCount++
+      console.log(
+        `[SpeakerID] Borderline upgrade: seg ${seg.id} → "${best.speakerName}" ${Math.round(seg.currentConfidence * 100)}% → ${Math.round(best.confidence * 100)}%`
+      )
+    }
+
+    if (upgradedCount > 0) {
+      const segments = transcriptRepo.findByRecordingId(recordingId)
+      getWebContents()?.send(IPC.transcript.speakersSwept, { recordingId, segments })
+    }
+
+    return upgradedCount
+  }
+
+  /**
    * After a speaker embedding is learned, sweep all unresolved SPEAKER_XX clusters in
    * the recording and auto-assign any that match a stored voice embedding with
    * confidence >= AUTO_APPLY_CONFIDENCE_THRESHOLD.  Runs fully in the background.
@@ -61,14 +110,10 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
     const expectedSpeakerIds = recordingRepo.getExpectedSpeakerIds(recordingId)
     const speakerFilter = expectedSpeakerIds.length > 0 ? expectedSpeakerIds : undefined
 
-    // ── SPEAKER_XX clusters (from diarization) ──────────────────────────────
-    const unresolvedClusters = transcriptRepo.findUnresolvedSpeakerClusters(recordingId)
-    const nullSegments = transcriptRepo.findNullSpeakerSegments(recordingId)
-
-    if (unresolvedClusters.length === 0 && nullSegments.length === 0) return 0
-
     let updatedCount = 0
 
+    // ── SPEAKER_XX clusters (from diarization) ──────────────────────────────
+    const unresolvedClusters = transcriptRepo.findUnresolvedSpeakerClusters(recordingId)
     if (unresolvedClusters.length > 0) {
       const batchInput = unresolvedClusters.map((c) => ({
         id: c.rawLabel,
@@ -98,6 +143,7 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
     }
 
     // ── NULL-speaker segments (no diarization label at all) ─────────────────
+    const nullSegments = transcriptRepo.findNullSpeakerSegments(recordingId)
     if (nullSegments.length > 0) {
       const batchInput = nullSegments.map((s) => ({
         id: s.id,
@@ -124,44 +170,15 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
       }
     }
 
-    // ── Borderline re-evaluation ─────────────────────────────────────────────
-    // Re-identify segments that were auto-assigned below the high-confidence
-    // cutoff. A newly learned embedding may now outscore the previous winner.
-    // Only overwrite when the new match is STRICTLY better — never downgrade.
-    // Manual confirmations (speaker_confidence IS NULL) are excluded by the
-    // repo query so user choices are always preserved.
-    const belowThreshold = transcriptRepo.findBelowThresholdAssignedSegments(
-      recordingId, AUTO_APPLY_CONFIDENCE_THRESHOLD
-    )
-    if (belowThreshold.length > 0) {
-      const batchInput = belowThreshold.map((s) => ({
-        id: s.id,
-        segments: [{ start: s.timestampStart, end: s.timestampEnd }],
-      }))
-      const resultsMap = await speakerIdService.identifyBatch(audioPath, batchInput, speakerFilter)
-
-      for (const seg of belowThreshold) {
-        const candidates = resultsMap.get(seg.id)
-        const best = candidates?.[0]
-        if (!best) continue
-        if (!speakerFilter?.length && best.confidence < AUTO_APPLY_CONFIDENCE_THRESHOLD) continue
-        // Strictly-better guard — never downgrade an existing auto-assignment
-        if (best.confidence <= seg.currentConfidence) continue
-        transcriptRepo.assignSpeakerToSegmentWithConfidence(
-          seg.id, best.speakerId, best.speakerName, best.confidence
-        )
-        updatedCount++
-        console.log(
-          `[SpeakerID] Borderline upgrade: seg ${seg.id} → "${best.speakerName}" ${Math.round(seg.currentConfidence * 100)}% → ${Math.round(best.confidence * 100)}%`
-        )
-      }
-    }
-
-    // Push fresh segments to the renderer so it updates without polling
     if (updatedCount > 0) {
       const segments = transcriptRepo.findByRecordingId(recordingId)
       getWebContents()?.send(IPC.transcript.speakersSwept, { recordingId, segments })
     }
+
+    // ── Borderline re-evaluation (always — not gated on unresolved clusters) ─
+    // This is extracted so the assignSpeaker handler can call it directly
+    // after every new embedding, bypassing the sweep mutex.
+    updatedCount += await reEvaluateBelowThreshold(recordingId, audioPath)
 
     return updatedCount
   }
@@ -183,6 +200,13 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
         speaker = speakerRepo.findById(args.profileId) ?? speakerRepo.create(args.speakerName)
       } else {
         speaker = speakerRepo.findByName(args.speakerName) ?? speakerRepo.create(args.speakerName)
+      }
+
+      // If this recording already has a constrained expected-speakers list, add the
+      // newly resolved speaker to it so future sweeps include them.
+      const existingExpected = recordingRepo.getExpectedSpeakerIds(args.recordingId)
+      if (existingExpected.length > 0) {
+        recordingRepo.addExpectedSpeaker(args.recordingId, speaker.id)
       }
 
       // Only do a bulk-by-label update when speakerId is a raw diarization label
@@ -236,6 +260,13 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
               await sweepUnresolvedClusters(args.recordingId, audioPath)
             } catch (err) {
               console.warn('[SpeakerID] Cross-cluster sweep failed:', (err as Error).message)
+            }
+            // Always re-evaluate borderline segments after a new embedding — runs
+            // even if sweepUnresolvedClusters was skipped by the mutex.
+            try {
+              await reEvaluateBelowThreshold(args.recordingId, audioPath)
+            } catch (err) {
+              console.warn('[SpeakerID] Borderline re-evaluation failed:', (err as Error).message)
             }
             if (isSnapshot) try { unlinkSync(audioPath) } catch { /* ignore */ }
           })()
@@ -297,10 +328,24 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
             } catch (err) {
               console.warn('[SpeakerID] Cross-cluster sweep failed:', (err as Error).message)
             }
+            // Always re-evaluate borderline segments after a new embedding — runs
+            // even if sweepUnresolvedClusters was skipped by the mutex.
+            try {
+              await reEvaluateBelowThreshold(args.recordingId, audioPath)
+            } catch (err) {
+              console.warn('[SpeakerID] Borderline re-evaluation failed:', (err as Error).message)
+            }
             if (isSnapshot) try { unlinkSync(audioPath) } catch { /* ignore */ }
           })()
         }
       }
+
+      // Immediately push the updated segment list to the renderer so
+      // RecordingSpeakersBar refreshes allSpeakers (picks up newly created
+      // profiles) and expectedIds (picks up addExpectedSpeaker above) without
+      // having to wait for the background sweep to finish.
+      const freshSegments = transcriptRepo.findByRecordingId(args.recordingId)
+      getWebContents()?.send(IPC.transcript.speakersSwept, { recordingId: args.recordingId, segments: freshSegments })
 
       return { updatedSegments: updated }
     }

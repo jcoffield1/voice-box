@@ -81,6 +81,7 @@ export default function SpeakerLabelModal({ segment, onClose, onSaved }: Props) 
       segmentId: segment.id,
     }).then(({ candidates: ranked }) => {
       setCandidates(ranked)
+
     }).catch(() => {}).finally(() => setRankLoading(false))
   }, [segment.id, segment.recordingId, currentSpeakerId])
 
