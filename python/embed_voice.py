@@ -31,7 +31,7 @@ import traceback
 import os
 from math import gcd
 import numpy as np
-import soundfile as sf
+import av as _av
 from scipy.signal import resample_poly
 
 SR = 16000  # All audio is resampled to 16 kHz before embedding
@@ -55,7 +55,7 @@ def _init_backend() -> None:
             from pyannote.audio import Inference
             _inference = Inference(
                 "pyannote/embedding",
-                use_auth_token=hf_token,
+                token=hf_token,
                 window="whole",
             )
             _backend = "pyannote"
@@ -96,24 +96,48 @@ def _embed_audio(audio: np.ndarray) -> np.ndarray:
 # ── Audio loading ─────────────────────────────────────────────────────────────
 
 def _load_segment(audio_path: str, start_sec: float, end_sec: float) -> np.ndarray:
-    """Seek-based partial read — never loads the full file into memory."""
-    info = sf.info(audio_path)
-    native_sr   = info.samplerate
-    start_frame = max(0, int(start_sec * native_sr))
-    end_frame   = min(info.frames, int(end_sec * native_sr))
-    if end_frame <= start_frame:
+    """Seek-based partial read using PyAV — supports .m4a, .wav, .mp4, etc."""
+    container = _av.open(str(audio_path))
+    try:
+        stream = container.streams.audio[0]
+        native_sr = stream.codec_context.sample_rate
+
+        # Seek slightly before start to handle AAC codec lookahead
+        if start_sec > 0.1:
+            container.seek(int((start_sec - 0.1) * 1e6), any_frame=True)
+
+        chunks = []
+        for frame in container.decode(stream):
+            if frame.pts is None:
+                continue
+            frame_t = float(frame.pts) * float(stream.time_base)
+            frame_end_t = frame_t + frame.samples / frame.sample_rate
+
+            if frame_end_t <= start_sec:
+                continue
+            if frame_t >= end_sec:
+                break
+
+            # float planar: (channels, samples) — M4A frames arrive as fltp already
+            audio_arr = frame.to_ndarray()
+
+            sr = frame.sample_rate
+            clip_start = max(0, int((start_sec - frame_t) * sr))
+            clip_end = min(frame.samples, int((end_sec - frame_t) * sr) + 1)
+            audio_arr = audio_arr[:, clip_start:clip_end]
+
+            if audio_arr.shape[1] > 0:
+                chunks.append(audio_arr.mean(axis=0).astype(np.float32))
+    finally:
+        container.close()
+
+    if not chunks:
         return np.zeros(0, dtype=np.float32)
 
-    audio, _ = sf.read(
-        audio_path, start=start_frame, stop=end_frame,
-        dtype="float32", always_2d=False,
-    )
-
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
+    audio = np.concatenate(chunks)
 
     if native_sr != SR:
-        g     = gcd(native_sr, SR)
+        g = gcd(native_sr, SR)
         audio = resample_poly(audio, SR // g, native_sr // g).astype(np.float32)
 
     peak = np.abs(audio).max()
@@ -152,8 +176,7 @@ def embed(payload: dict) -> dict:
         raise ValueError(f"Audio file not found: {audio_path}")
 
     _init_backend()
-    info  = sf.info(audio_path)
-    audio = _load_segment(audio_path, 0.0, info.frames / info.samplerate)
+    audio = _load_segment(audio_path, 0.0, float('inf'))
     embedding = _embed_audio(audio)
 
     return {"embedding": embedding.tolist(), "speaker_id": speaker_id, "dim": len(embedding)}

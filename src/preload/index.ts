@@ -140,6 +140,8 @@ const api = {
       invoke<void>(IPC.recording.regenerateDebrief, args),
     reprocessRecording: (args: ReprocessRecordingArgs) =>
       invoke<void>(IPC.recording.reprocessRecording, args),
+    reDiarize: (args: ReprocessRecordingArgs) =>
+      invoke<void>(IPC.recording.reDiarize, args),
     getExpectedSpeakers: (args: GetExpectedSpeakersArgs) =>
       invoke<GetExpectedSpeakersResult>(IPC.recording.getExpectedSpeakers, args),
     setExpectedSpeakers: (args: SetExpectedSpeakersArgs) =>

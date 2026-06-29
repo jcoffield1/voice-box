@@ -156,12 +156,13 @@ export class TranscriptRepository {
     type Row = { timestamp_start: number; timestamp_end: number }
     return this.db
       .prepare<[string, string], Row>(
-        // Same trust filter as findManuallyConfirmedSpeakers: exclude borderline
-        // auto-assignments so they don't contaminate the voice embedding.
+        // Only use segments explicitly confirmed by the user (speaker_confidence IS NULL).
+        // Auto-assigned segments — even high-confidence ones — are excluded to prevent
+        // the system from reinforcing its own guesses into future embeddings.
         `SELECT timestamp_start, timestamp_end
          FROM transcript_segments
          WHERE recording_id = ? AND speaker_id = ?
-           AND (speaker_confidence IS NULL OR speaker_confidence >= 0.85)
+           AND speaker_confidence IS NULL
          ORDER BY timestamp_start ASC`
       )
       .all(recordingId, profileId)
@@ -257,18 +258,16 @@ export class TranscriptRepository {
     type Row = { speaker_id: string; timestamp_start: number; timestamp_end: number }
     const rows = this.db
       .prepare<string, Row>(
-        // Only feed trustworthy segments into learnSpeaker:
-        //   - speaker_confidence IS NULL  → user manually confirmed (most trusted)
-        //   - speaker_confidence >= 0.85  → high-confidence auto-assignment
-        // Excluding low-confidence auto-assignments (0.75–0.84) prevents a
-        // contamination loop where a misidentified segment corrupts the stored
-        // embedding, making future misidentifications more likely.
+        // Only feed user-confirmed segments into learnSpeaker.
+        // speaker_confidence IS NULL means the user explicitly assigned the speaker;
+        // any numeric confidence (including >= 0.85 auto-assignments) is excluded
+        // so the system never reinforces its own guesses into future embeddings.
         `SELECT speaker_id, timestamp_start, timestamp_end
          FROM transcript_segments
          WHERE recording_id = ?
            AND speaker_id IS NOT NULL
            AND speaker_id NOT LIKE 'SPEAKER_%'
-           AND (speaker_confidence IS NULL OR speaker_confidence >= 0.85)
+           AND speaker_confidence IS NULL
          ORDER BY timestamp_start ASC`
       )
       .all(recordingId) as Row[]

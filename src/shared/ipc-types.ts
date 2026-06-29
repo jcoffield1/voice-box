@@ -386,7 +386,8 @@ export const IPC = {
     // Import an audio file and process it like a recording
     import: 'recording:import',
     // Re-transcribe and re-diarize an existing recording from its saved audio file
-    reprocessRecording: 'recording:reprocessRecording'
+    reprocessRecording: 'recording:reprocessRecording',
+    reDiarize: 'recording:reDiarize'
   },
   transcript: {
     get: 'transcript:get',

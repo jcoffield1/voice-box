@@ -218,7 +218,7 @@ function initServices(): void {
   // transcript segment, then tries to match each unique speaker against
   // stored voice embeddings.
 
-  const SPEAKER_ID_CONFIDENCE_THRESHOLD = 0.75
+  const SPEAKER_ID_CONFIDENCE_THRESHOLD = 0.85
 
   interface DiarizationSegment {
     speaker_id: string
@@ -330,7 +330,7 @@ function initServices(): void {
     mainWindow?.webContents.send('audio:level', level)
   })
 
-  const LIVE_SPEAKER_ID_THRESHOLD = 0.75
+  const LIVE_SPEAKER_ID_THRESHOLD = 0.85
   // A winning speaker must beat the runner-up by at least this margin.
   // Without a gap check, Ed Donner at 77% beats Jon Coffield at 70% — a
   // borderline "win" during a speaker transition that produces a false positive.
@@ -690,11 +690,10 @@ function initServices(): void {
       }
 
       // ── Re-sweep borderline live-assigned segments ────────────────────────
-      // Live-ID runs against in-progress embeddings; post-recording learnSpeaker
-      // above may have updated those embeddings significantly.  Re-identify any
-      // segment assigned with 0.75–0.84 confidence so that a wrong assignment
-      // made with a stale embedding (e.g. Ed Donner scored 78% when Jon was the
-      // true speaker at 82%) gets corrected using the now-updated profiles.
+      // Live and post-recording both use LIVE_SPEAKER_ID_THRESHOLD (0.85), so
+      // this range [threshold, 0.85) is currently empty and this block is a
+      // no-op. Kept so a future threshold split (live < post) automatically
+      // re-activates without code changes.
       try {
         const borderlineSegs = transcriptRepo.findBorderlineAssignedSegments(
           recordingId, LIVE_SPEAKER_ID_THRESHOLD, 0.85

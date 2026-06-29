@@ -14,24 +14,15 @@ import sys
 import json
 import traceback
 import os
+import numpy as np
 
 _pipeline = None
 
 
 def _patch_compat():
     """
-    Patch incompatibilities between pyannote 3.x and newer library versions.
-
-    1. torchaudio 2.x removed AudioMetaData, info(), and list_audio_backends()
-       which pyannote 3.x references at import time.
-
-    2. huggingface_hub 1.x removed the `use_auth_token` kwarg from hf_hub_download
-       and related functions. pyannote 3.x still passes it. We wrap the hub
-       functions to remap `use_auth_token` -> `token` transparently.
-
-    3. PyTorch raises a UserWarning when pyannote's SpeakerEmbedding pooling
-       computes std() on segments that are too short (single frame → ddof==0).
-       This is harmless — pyannote falls back to zero variance — so suppress it.
+    Suppress warnings from pyannote 4.x / torchaudio 2.x and patch torch.load
+    to allow loading pyannote checkpoint files that embed custom classes.
     """
     import warnings
     warnings.filterwarnings(
@@ -39,60 +30,15 @@ def _patch_compat():
         message=r'std\(\): degrees of freedom is <= 0',
         category=UserWarning,
     )
-
-    import torchaudio
-    import soundfile as sf
-    import torch
-    import numpy as np
-
-    # torchaudio 2.11 replaced all audio I/O with torchcodec (requires FFmpeg).
-    # Replace torchaudio.load with a soundfile-based implementation that returns
-    # the same (waveform_tensor, sample_rate) tuple pyannote expects.
-    if not getattr(torchaudio.load, '_sf_patched', False):
-        def _sf_load(path, frame_offset=0, num_frames=-1, normalize=True, channels_first=True, format=None, backend=None):
-            data, sr = sf.read(str(path), dtype='float32', always_2d=True)
-            # soundfile returns (frames, channels); pyannote expects (channels, frames)
-            waveform = torch.from_numpy(data.T if channels_first else data)
-            if frame_offset > 0 or num_frames != -1:
-                end = None if num_frames == -1 else frame_offset + num_frames
-                waveform = waveform[:, frame_offset:end]
-            return waveform, sr
-        _sf_load._sf_patched = True
-        torchaudio.load = _sf_load
-
-    if not hasattr(torchaudio, 'AudioMetaData'):
-        from dataclasses import dataclass
-
-        @dataclass
-        class _AudioMetaData:
-            sample_rate: int
-            num_frames: int
-            num_channels: int
-            bits_per_sample: int
-            encoding: str
-
-        torchaudio.AudioMetaData = _AudioMetaData
-
-    if not hasattr(torchaudio, 'info'):
-        def _info(path, backend=None):
-            info = sf.info(str(path))
-            return torchaudio.AudioMetaData(
-                sample_rate=info.samplerate,
-                num_frames=info.frames,
-                num_channels=info.channels,
-                bits_per_sample=16,
-                encoding='PCM_S',
-            )
-        torchaudio.info = _info
-
-    if not hasattr(torchaudio, 'list_audio_backends'):
-        torchaudio.list_audio_backends = lambda: ['soundfile']
+    warnings.filterwarnings(
+        'ignore',
+        message=r'torchcodec is not installed',
+        category=UserWarning,
+    )
 
     # PyTorch 2.6+ defaults weights_only=True in torch.load, which blocks
     # pyannote checkpoints that embed custom classes (TorchVersion,
-    # Specifications, Problem, etc.). Rather than allowlisting each class
-    # individually, patch torch.load to default weights_only=False.
-    # These are trusted HuggingFace model files cached locally.
+    # Specifications, Problem, etc.).  These are trusted local HF cache files.
     import torch
     import inspect
     if not getattr(torch.load, '_weights_patched', False):
@@ -104,26 +50,6 @@ def _patch_compat():
             return _orig_load(*args, **kwargs)
         _load_weights_false._weights_patched = True
         torch.load = _load_weights_false
-
-    # Remap use_auth_token -> token for all huggingface_hub download functions.
-    import huggingface_hub
-    import functools
-
-    def _remap_auth_token(fn):
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            if 'use_auth_token' in kwargs:
-                token = kwargs.pop('use_auth_token')
-                kwargs.setdefault('token', token)
-            return fn(*args, **kwargs)
-        return wrapper
-
-    for _fn_name in ('hf_hub_download', 'snapshot_download', 'model_info'):
-        _fn = getattr(huggingface_hub, _fn_name, None)
-        if _fn and not getattr(_fn, '_auth_patched', False):
-            _wrapped = _remap_auth_token(_fn)
-            _wrapped._auth_patched = True
-            setattr(huggingface_hub, _fn_name, _wrapped)
 
 
 def get_pipeline():
@@ -151,10 +77,27 @@ def diarize(payload: dict) -> dict:
 
     pipeline = get_pipeline()
 
-    # Pre-load audio with torchaudio so pyannote never calls torchcodec
-    import torchaudio
-    waveform, sample_rate = torchaudio.load(audio_path)
-    audio_input = {"waveform": waveform, "sample_rate": sample_rate}
+    # Pre-load audio with PyAV (supports .m4a, .wav, etc.) and pass as a
+    # waveform dict so pyannote never touches torchcodec / system FFmpeg.
+    import av as _av
+    import torch
+
+    container = _av.open(audio_path)
+    try:
+        stream = container.streams.audio[0]
+        native_sr = stream.codec_context.sample_rate
+        resampler = _av.AudioResampler(format='fltp', layout='mono', rate=native_sr)
+        chunks = []
+        for frame in container.decode(stream):
+            for out_frame in resampler.resample(frame):
+                chunks.append(out_frame.to_ndarray())
+        for out_frame in resampler.resample(None):  # flush codec buffer
+            chunks.append(out_frame.to_ndarray())
+    finally:
+        container.close()
+
+    audio_np = np.concatenate(chunks, axis=1).astype(np.float32)  # (1, samples)
+    audio_input = {"waveform": torch.from_numpy(audio_np), "sample_rate": native_sr}
 
     kwargs = {}
     if num_speakers:

@@ -216,6 +216,16 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     })()
   })
 
+  // Re-run diarization + speaker sweep on an already-transcribed recording,
+  // skipping re-transcription. Useful when diarization previously failed.
+  // triggerPostRecordingPipeline fires async and emits IPC.recording.processed when done.
+  ipcMain.handle(IPC.recording.reDiarize, (_event, args: ReprocessRecordingArgs): void => {
+    const recording = recordingRepo.findById(args.recordingId)
+    if (!recording?.audioPath) throw new Error('Recording has no saved audio file')
+    recordingRepo.update(recording.id, { status: 'processing' })
+    triggerPostRecordingPipeline(recording.id)
+  })
+
   ipcMain.handle(IPC.recording.getExpectedSpeakers, async (_event, args: GetExpectedSpeakersArgs): Promise<GetExpectedSpeakersResult> => {
     return { speakerIds: recordingRepo.getExpectedSpeakerIds(args.recordingId) }
   })

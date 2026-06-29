@@ -71,6 +71,7 @@ export default function RecordingPage() {
 
   // Reprocess
   const [isReprocessing, setIsReprocessing] = useState(false)
+  const [isReDiarizing, setIsReDiarizing] = useState(false)
 
   // Playback sync: currentTime from AudioPlayer drives transcript highlight;
   // seekToSeconds is set when the user clicks a segment play button.
@@ -123,6 +124,7 @@ export default function RecordingPage() {
     const off = window.api.recording.onProcessed(async ({ recordingId }) => {
       if (recordingId !== id) return
       setIsReprocessing(false)
+      setIsReDiarizing(false)
       const { recording: updated } = await window.api.recording.get({ recordingId })
       if (updated) updateRecording(updated)
     })
@@ -204,6 +206,19 @@ export default function RecordingPage() {
       if (recording) updateRecording(recording)
     }
   }, [id, isReprocessing, recording, updateRecording])
+
+  const reDiarize = useCallback(async () => {
+    if (!id || isReDiarizing) return
+    setIsReDiarizing(true)
+    if (recording) updateRecording({ ...recording, status: 'processing' })
+    try {
+      await window.api.recording.reDiarize({ recordingId: id })
+    } catch (err) {
+      console.error('[ReDiarize] Failed to start:', err)
+      setIsReDiarizing(false)
+      if (recording) updateRecording(recording)
+    }
+  }, [id, isReDiarizing, recording, updateRecording])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -524,12 +539,25 @@ export default function RecordingPage() {
               </span>
             )}
 
+            {/* Re-diarize button — runs speaker pipeline without re-transcribing */}
+            {!isLive && recording?.audioPath && (
+              <button
+                className="btn-ghost py-1.5 px-3 text-xs flex items-center gap-1.5 shrink-0"
+                onClick={() => void reDiarize()}
+                disabled={isReDiarizing || isReprocessing || recording?.status === 'processing'}
+                title="Re-run speaker diarization without re-transcribing"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${isReDiarizing ? 'animate-spin' : ''}`} />
+                {isReDiarizing ? 'Diarizing…' : 'Re-diarize'}
+              </button>
+            )}
+
             {/* Reprocess button */}
             {!isLive && recording?.audioPath && (
               <button
                 className="btn-ghost py-1.5 px-3 text-xs flex items-center gap-1.5 shrink-0"
                 onClick={reprocess}
-                disabled={isReprocessing || recording?.status === 'processing'}
+                disabled={isReprocessing || isReDiarizing || recording?.status === 'processing'}
                 title="Re-transcribe and re-diarize from the saved audio file"
               >
                 <RotateCcw className={`w-3.5 h-3.5 ${isReprocessing ? 'animate-spin' : ''}`} />
