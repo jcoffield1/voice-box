@@ -29,7 +29,7 @@ A local-first Electron desktop application for macOS that records calls and meet
 | Feature | Details |
 |---|---|
 | **Real-time transcription** | Chunked Whisper transcription via local Python subprocess |
-| **Speaker diarization** | Pyannote.audio identifies and labels individual speakers |
+| **Speaker diarization** | Pyannote.audio 4.x identifies and labels individual speakers; one-click assignment modal with voice-confidence cards |
 | **Speaker profiles** | Voice embeddings auto-match returning speakers across recordings |
 | **Transcript refinement** | Optional LLM pass corrects Whisper errors in proper nouns and speaker names |
 | **Semantic search** | Vector similarity search over your entire transcript corpus |
@@ -210,14 +210,16 @@ Main Process (Node.js)
 After a recording ends (or when a recording is manually reprocessed), the main process runs `runPostRecordingPipeline`, which:
 
 1. Runs full-file Whisper transcription for improved accuracy
-2. Runs Pyannote diarization to assign speaker IDs
-3. Matches speakers against stored voice profiles
+2. Runs Pyannote diarization to assign speaker IDs (passes `num_speakers` hint when expected speakers are configured)
+3. Matches diarization clusters against stored voice profiles using cosine similarity (≥ 85% threshold)
 4. Optionally runs an LLM transcript-refinement pass (corrects proper nouns and speaker names)
 5. Rebuilds search embeddings for all segments via `embeddingService.indexAll()`
 6. Generates a meeting debrief summary
 7. Signals the renderer that processing is complete
 
-The "New Recording" button is disabled while any recording has `status === 'processing'` to prevent concurrent pipeline runs.
+The **Re-diarize** button on each recording's detail page re-runs steps 2–7 without re-transcribing. Use this when diarization fails or when expected speakers have been updated after the fact.
+
+The "New Recording" button is disabled while any recording has `status === 'processing'` to prevent concurrent pipeline runs. On startup, any recording stuck in `processing` state is automatically reset to `error`.
 
 ---
 
