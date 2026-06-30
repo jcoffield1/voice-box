@@ -70,7 +70,15 @@ def transcribe(payload: dict) -> dict:
             # Feed previous chunk text so the model can resolve homophones and
             # carry over proper nouns across chunk boundaries.
             initial_prompt=initial_prompt,
-            condition_on_previous_text=initial_prompt is not None,
+            # MUST be False: when True, Whisper feeds each decoded sub-segment
+            # back as context for the next one within the same chunk. If the model
+            # hallucinates a word once, this creates an unbounded loop that fills
+            # the segment with the same word hundreds of times. The initial_prompt
+            # already provides the necessary cross-chunk context, so conditioning
+            # on previous text within the chunk is not needed.
+            condition_on_previous_text=False,
+            # Penalise repeated tokens to further reduce looping hallucinations.
+            repetition_penalty=1.3,
         )
         segments = []
         for seg in fw_segments:

@@ -25,9 +25,11 @@ export default function SearchPage() {
   const [showFilters, setShowFilters] = useState(false)
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>([])
   const [templates, setTemplates] = useState<SummaryTemplate[]>([])
+  const [allTags, setAllTags] = useState<string[]>([])
   const [speakerFilter, setSpeakerFilter] = useState('')
   // '__default__' = filter by recordings with no template assigned (using default)
   const [templateFilter, setTemplateFilter] = useState<string>('')
+  const [tagFilter, setTagFilter] = useState<string>('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [history, setHistory] = useState<string[]>(loadHistory)
@@ -37,6 +39,7 @@ export default function SearchPage() {
   useEffect(() => {
     window.api.speaker.getAll().then(({ speakers: all }) => setSpeakers(all)).catch(() => {})
     window.api.template.getAll().then(({ templates: all }) => setTemplates(all)).catch(() => {})
+    window.api.recording.getAllTags().then(({ tags }) => setAllTags(tags)).catch(() => {})
   }, [])
 
   const handleSubmit = useCallback(
@@ -50,21 +53,23 @@ export default function SearchPage() {
       void submit(q, {
         speakerName: speakerFilter || undefined,
         ...(templateFilter === '' ? {} : { templateId: templateFilter }),
+        ...(tagFilter ? { tags: [tagFilter] } : {}),
         dateFrom: dateFrom ? new Date(dateFrom).getTime() : undefined,
         dateTo: dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : undefined
       })
     },
-    [input, speakerFilter, templateFilter, dateFrom, dateTo, submit]
+    [input, speakerFilter, templateFilter, tagFilter, dateFrom, dateTo, submit]
   )
 
   const clearFilters = () => {
     setSpeakerFilter('')
     setTemplateFilter('')
+    setTagFilter('')
     setDateFrom('')
     setDateTo('')
   }
 
-  const hasFilters = speakerFilter || templateFilter || dateFrom || dateTo
+  const hasFilters = speakerFilter || templateFilter || tagFilter || dateFrom || dateTo
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -176,6 +181,21 @@ export default function SearchPage() {
                   ))}
                 </select>
               </div>
+              {allTags.length > 0 && (
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1">Tag</label>
+                  <select
+                    className="input text-sm w-full"
+                    value={tagFilter}
+                    onChange={(e) => setTagFilter(e.target.value)}
+                  >
+                    <option value="">All tags</option>
+                    {allTags.map((tag) => (
+                      <option key={tag} value={tag}>{tag}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="block text-xs text-zinc-500 mb-1">From date</label>
                 <input

@@ -145,6 +145,8 @@ export interface SearchQuery {
   speakerName?: string
   /** Filter to recordings assigned to this templateId. Pass null to match recordings using the default (no template assigned). */
   templateId?: string | null
+  /** Filter to recordings that have ALL of these tags (case-insensitive). */
+  tags?: string[]
   dateFrom?: number
   dateTo?: number
   limit?: number

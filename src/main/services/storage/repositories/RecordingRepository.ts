@@ -152,4 +152,17 @@ export class RecordingRepository {
       .prepare(`INSERT OR IGNORE INTO recording_expected_speakers (recording_id, speaker_id) VALUES (?, ?)`)
       .run(recordingId, speakerId)
   }
+
+  /** Return all unique tag strings used across every recording, sorted alphabetically. */
+  getAllTags(): string[] {
+    const rows = this.db
+      .prepare<[], { tag: string }>(
+        `SELECT DISTINCT value AS tag
+         FROM recordings, json_each(recordings.tags)
+         WHERE json_valid(tags) AND tags != '[]'
+         ORDER BY value`
+      )
+      .all()
+    return rows.map((r) => r.tag)
+  }
 }

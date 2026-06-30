@@ -27,7 +27,8 @@ interface AIState {
     model: string,
     provider: LLMProviderType,
     templateId?: string | null,
-    templateName?: string
+    templateName?: string,
+    tags?: string[]
   ) => Promise<void>
 }
 
@@ -123,7 +124,7 @@ export const useAIStore = create<AIState>((set, get) => ({
     })
   },
 
-  sendMessage: async (threadId, message, recordingId, model, provider, templateId, templateName) => {
+  sendMessage: async (threadId, message, recordingId, model, provider, templateId, templateName, tags) => {
     get().setLoading(threadId, true)
     get().clearStreaming(threadId)
     try {
@@ -145,7 +146,8 @@ export const useAIStore = create<AIState>((set, get) => ({
         model,
         provider,
         ...(templateId !== undefined ? { templateId } : {}),
-        ...(templateName ? { templateName } : {})
+        ...(templateName ? { templateName } : {}),
+        ...(tags && tags.length > 0 ? { tags } : {})
       })
       get().addMessage(result.message)
     } finally {

@@ -18,6 +18,7 @@ import type {
   GetExpectedSpeakersResult,
   SetExpectedSpeakersArgs,
   SetExpectedSpeakersResult,
+  GetAllTagsResult,
   PauseRecordingArgs,
   ResumeRecordingArgs,
   ExportTranscriptArgs,
@@ -33,6 +34,8 @@ import type {
   RankSpeakersResult,
   SweepSpeakersArgs,
   SweepSpeakersResult,
+  CleanHallucinationsArgs,
+  CleanHallucinationsResult,
   SearchArgs,
   SearchResult_,
   ReindexArgs,
@@ -146,6 +149,8 @@ const api = {
       invoke<GetExpectedSpeakersResult>(IPC.recording.getExpectedSpeakers, args),
     setExpectedSpeakers: (args: SetExpectedSpeakersArgs) =>
       invoke<SetExpectedSpeakersResult>(IPC.recording.setExpectedSpeakers, args),
+    getAllTags: () =>
+      invoke<GetAllTagsResult>(IPC.recording.getAllTags),
     onDebriefReady: (cb: (payload: RecordingDebriefReadyPayload) => void) =>
       on(IPC.recording.debriefReady, cb as (...args: unknown[]) => void),
     onProcessed: (cb: (payload: { recordingId: string }) => void) =>
@@ -164,6 +169,8 @@ const api = {
       invoke<RankSpeakersResult>(IPC.transcript.rankSpeakers, args),
     sweepSpeakers: (args: SweepSpeakersArgs) =>
       invoke<SweepSpeakersResult>(IPC.transcript.sweepSpeakers, args),
+    cleanHallucinations: (args: CleanHallucinationsArgs) =>
+      invoke<CleanHallucinationsResult>(IPC.transcript.cleanHallucinations, args),
     onSegmentAdded: (cb: (segment: TranscriptSegment) => void) =>
       on(IPC.transcript.segmentAdded, cb as (...args: unknown[]) => void),
     onDiarizationComplete: (cb: (data: { recordingId: string }) => void) =>

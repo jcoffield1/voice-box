@@ -662,6 +662,18 @@ function initServices(): void {
       return
     }
 
+    // Remove any Whisper hallucination segments (repeated-token loops) before
+    // diarization — running diarize on garbage text wastes time and produces
+    // incorrect speaker counts.
+    const removedCount = transcriptRepo.deleteHallucinatedSegments(recordingId)
+    if (removedCount > 0) {
+      console.warn(`[PostRecording] Removed ${removedCount} hallucinated segment(s) from recording ${recordingId}`)
+      mainWindow?.webContents.send(IPC.transcript.speakersSwept, {
+        recordingId,
+        segments: transcriptRepo.findByRecordingId(recordingId)
+      })
+    }
+
     // Load expected speakers for this recording (empty = match all)
     const expectedSpeakerIds = recordingRepo.getExpectedSpeakerIds(recordingId)
     const speakerFilter = expectedSpeakerIds.length > 0 ? expectedSpeakerIds : undefined

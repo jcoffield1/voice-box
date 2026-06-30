@@ -42,43 +42,115 @@ function buildTranscriptContext(segments: TranscriptSegment[]): string {
     .join('\n')
 }
 
-const RAG_CONTEXT_RESULTS = 8 // max segments to inject for cross-recording chat
-const RAG_PREFETCH_MULTIPLIER = 5 // over-fetch when template filtering to avoid post-filter starvation
+const RAG_CONTEXT_RESULTS = 20  // segments to inject for cross-recording chat
+const RAG_PREFETCH_MULTIPLIER = 4 // over-fetch when filtering to compensate for post-filter attrition
+const MAX_DEBRIEF_CHARS = 3000   // cap per-recording debrief so we don't blow the context window
+const MAX_DEBRIEF_RECORDINGS = 5 // include debriefs for at most the N most-represented recordings
 
-async function buildRagContext(query: string, search: SearchService, templateId?: string | null, templateName?: string): Promise<string> {
+async function buildRagContext(
+  query: string,
+  search: SearchService,
+  recordingRepo: RecordingRepository,
+  templateId?: string | null,
+  templateName?: string,
+  tags?: string[]
+): Promise<string> {
   try {
-    // When filtering by template, fetch more candidates to compensate for post-filter attrition.
-    const isFiltered = templateId !== undefined
+    // When filtering, over-fetch to compensate for post-filter result attrition.
+    const isFiltered = templateId !== undefined || (tags && tags.length > 0)
     const limit = isFiltered ? RAG_CONTEXT_RESULTS * RAG_PREFETCH_MULTIPLIER : RAG_CONTEXT_RESULTS
     const searchQuery: Parameters<typeof search.query>[0] = { query, limit }
-    if (isFiltered) searchQuery.templateId = templateId
+    if (templateId !== undefined) searchQuery.templateId = templateId
+    if (tags && tags.length > 0) searchQuery.tags = tags
     const rawResults = await search.query(searchQuery)
     const results = isFiltered ? rawResults.slice(0, RAG_CONTEXT_RESULTS) : rawResults
     if (results.length === 0) return ''
-    const scopeNote = templateName ? ` from the "${templateName}" category` : ''
-    const lines = results.map((r) => {
+
+    const scopeParts: string[] = []
+    if (templateName) scopeParts.push(`in the "${templateName}" category`)
+    if (tags && tags.length > 0) scopeParts.push(`tagged "${tags.join('", "')}"`)
+    const scopeNote = scopeParts.length > 0 ? ` from recordings ${scopeParts.join(' and ')}` : ''
+
+    // ── Specific transcript excerpts ─────────────────────────────────────────
+    const excerptLines = results.map((r) => {
       const ts = `${Math.floor(r.timestampStart / 60)}:${String(Math.floor(r.timestampStart % 60)).padStart(2, '0')}`
       const speaker = r.speakerName ? `${r.speakerName}: ` : ''
       return `[${r.recordingTitle} @ ${ts}] ${speaker}${r.text}`
     })
 
-    // Append per-recording notes/tags so the AI has that context too
-    const recordingMeta = new Map<string, { title: string; notes: string | null; tags: string[] }>()
-    for (const r of results) {
-      if (!recordingMeta.has(r.recordingId)) {
-        recordingMeta.set(r.recordingId, { title: r.recordingTitle, notes: r.recordingNotes ?? null, tags: r.recordingTags ?? [] })
+    // ── Per-recording debriefs + metadata ────────────────────────────────────
+    // Count how many segments came from each recording so the most-represented
+    // ones (most relevant to the query) get their debriefs included first.
+    const recordingHits = new Map<string, number>()
+    for (const r of results) recordingHits.set(r.recordingId, (recordingHits.get(r.recordingId) ?? 0) + 1)
+    const rankedRecordingIds = [...recordingHits.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([id]) => id)
+
+    const debriefLines: string[] = []
+    const metaLines: string[] = []
+    const includedIds = new Set<string>()
+
+    // Pass 1: recordings that appeared in segment search results (ranked by hit count)
+    for (const rid of rankedRecordingIds) {
+      const rec = recordingRepo.findById(rid)
+      if (!rec) continue
+      includedIds.add(rid)
+
+      if (rec.debrief?.trim() && debriefLines.length < MAX_DEBRIEF_RECORDINGS) {
+        const text = rec.debrief.trim().slice(0, MAX_DEBRIEF_CHARS)
+        debriefLines.push(`=== "${rec.title}" ===\n${text}${rec.debrief.trim().length > MAX_DEBRIEF_CHARS ? '…' : ''}`)
+      }
+
+      const metaParts: string[] = []
+      if (rec.tags?.length) metaParts.push(`Tags: ${rec.tags.join(', ')}`)
+      if (rec.notes?.trim()) metaParts.push(`Notes: ${rec.notes.trim().slice(0, 300)}`)
+      if (metaParts.length > 0) metaLines.push(`"${rec.title}": ${metaParts.join(' | ')}`)
+    }
+
+    // Pass 2: keyword-match recording titles against the query so recordings that ARE
+    // the topic (e.g. "Jon Landon Demand planning") get their debriefs included even
+    // when only a few of their segments ranked in the semantic search.
+    const queryTerms = query.toLowerCase().split(/\s+/).filter((w) => w.length > 3)
+    const unsummarizedRelevant: string[] = []
+    if (queryTerms.length > 0) {
+      const allRecordings = recordingRepo.findAll()
+      for (const rec of allRecordings) {
+        if (includedIds.has(rec.id)) continue
+        const titleHits = queryTerms.filter((t) => rec.title.toLowerCase().includes(t)).length
+        // Require ≥2 matching terms, or all terms if query is only 1-2 words
+        const threshold = Math.min(2, queryTerms.length)
+        if (titleHits < threshold) continue
+
+        includedIds.add(rec.id)
+        if (rec.debrief?.trim() && debriefLines.length < MAX_DEBRIEF_RECORDINGS) {
+          const text = rec.debrief.trim().slice(0, MAX_DEBRIEF_CHARS)
+          debriefLines.push(`=== "${rec.title}" ===\n${text}${rec.debrief.trim().length > MAX_DEBRIEF_CHARS ? '…' : ''}`)
+        } else if (!rec.debrief?.trim()) {
+          unsummarizedRelevant.push(rec.title)
+        }
+
+        const metaParts: string[] = []
+        if (rec.tags?.length) metaParts.push(`Tags: ${rec.tags.join(', ')}`)
+        if (rec.notes?.trim()) metaParts.push(`Notes: ${rec.notes.trim().slice(0, 300)}`)
+        if (metaParts.length > 0) metaLines.push(`"${rec.title}": ${metaParts.join(' | ')}`)
       }
     }
-    const metaLines: string[] = []
-    for (const [, meta] of recordingMeta) {
-      const parts: string[] = []
-      if (meta.tags.length > 0) parts.push(`Tags: ${meta.tags.join(', ')}`)
-      if (meta.notes?.trim()) parts.push(`Notes: ${meta.notes.trim().slice(0, 400)}`)
-      if (parts.length > 0) metaLines.push(`"${meta.title}": ${parts.join(' | ')}`)
-    }
-    const metaBlock = metaLines.length > 0 ? `\n\nRECORDING CONTEXT:\n${metaLines.join('\n')}` : ''
 
-    return `RELEVANT TRANSCRIPT EXCERPTS${scopeNote} (from ${new Set(results.map((r) => r.recordingId)).size} recording(s)):\n${lines.join('\n')}${metaBlock}`
+    // If relevant recordings exist but have no AI summary, surface that to the user
+    const unsummarizedNote = unsummarizedRelevant.length > 0
+      ? `\n\nRECORDINGS WITHOUT SUMMARIES (relevant by title but not yet summarized — tell the user they can open these recordings and generate an AI debrief for richer answers):\n${unsummarizedRelevant.map((t) => `- "${t}"`).join('\n')}`
+      : ''
+
+    const debriefBlock = debriefLines.length > 0
+      ? `\n\nRECORDING SUMMARIES (full AI-generated debriefs for the most relevant recordings):\n${debriefLines.join('\n\n')}`
+      : ''
+    const metaBlock = metaLines.length > 0
+      ? `\n\nRECORDING METADATA:\n${metaLines.join('\n')}`
+      : ''
+
+    const uniqueRecordingCount = new Set(results.map((r) => r.recordingId)).size
+    return `RELEVANT TRANSCRIPT EXCERPTS${scopeNote} (${results.length} segments from ${uniqueRecordingCount} recording(s)):\n${excerptLines.join('\n')}${debriefBlock}${metaBlock}${unsummarizedNote}`
   } catch {
     return ''
   }
@@ -198,18 +270,23 @@ ${transcriptContext}
 When referencing specific moments, include the speaker name and timestamp. Be concise and accurate.`
     } else {
       // Cross-recording mode: use RAG to inject relevant context from all recordings
-      const ragContext = await buildRagContext(args.message, searchService, args.templateId, args.templateName)
-      const scopeDescription = args.templateName
-        ? `the "${args.templateName}" category of recordings`
+      const ragContext = await buildRagContext(args.message, searchService, recordingRepo, args.templateId, args.templateName, args.tags)
+      const scopeParts: string[] = []
+      if (args.templateName) scopeParts.push(`the "${args.templateName}" category`)
+      if (args.tags && args.tags.length > 0) scopeParts.push(`recordings tagged "${args.tags.join('", "')}"`)
+      const scopeDescription = scopeParts.length > 0
+        ? scopeParts.join(' and ')
         : 'the user\'s recorded conversations'
       systemPrompt = ragContext
         ? `You are an intelligent assistant with access to ${scopeDescription}.
-Answer questions ONLY using the provided transcript excerpts below. Do NOT draw on general knowledge to fill gaps — if the provided excerpts don't contain the answer, say so clearly.
-Always cite the recording title and timestamp when referencing content.
-Do NOT mention "the provided transcript", "the excerpts", or otherwise hint that you are working from a limited extract — the user already knows you are searching their recordings, and these qualifiers are noisy. Speak as if you are answering directly from their recorded conversations.
+You have been given full AI-generated summaries for the most relevant recordings AND specific transcript excerpts with timestamps.
+When answering broad questions, synthesize across the recording summaries to give a comprehensive answer.
+When citing specific moments or quotes, use the transcript excerpts.
+Answer using ONLY the provided context below — do NOT draw on general knowledge to fill gaps.
+Do NOT mention "the provided transcript", "the summaries", "the excerpts", or otherwise hint that you are working from search results — the user already knows you are searching their recordings.
 
 ${ragContext}`
-        : `You are a helpful AI assistant for a call transcription application. No relevant content was found${args.templateName ? ` in the "${args.templateName}" category` : ''}. Let the user know and suggest they broaden their scope or check that recordings have been assigned to that template.`
+        : `You are a helpful AI assistant for a call transcription application. No relevant content was found${scopeParts.length > 0 ? ` in ${scopeDescription}` : ''}. Let the user know and suggest they broaden their scope.`
     }
 
     const history = conversationRepo.findMessagesByThread(thread.id)

@@ -493,4 +493,32 @@ export class TranscriptRepository {
       .get(recordingId)
     return row?.c ?? 0
   }
+
+  /**
+   * Delete segments that look like Whisper looping hallucinations — one token
+   * repeated to fill the entire segment.  Returns the number of segments removed.
+   */
+  deleteHallucinatedSegments(recordingId: string): number {
+    const segments = this.findByRecordingId(recordingId)
+    const badIds = segments
+      .filter((s) => isHallucinatedText(s.text))
+      .map((s) => s.id)
+    if (badIds.length === 0) return 0
+    const placeholders = badIds.map(() => '?').join(',')
+    this.db.prepare(`DELETE FROM transcript_segments WHERE id IN (${placeholders})`).run(...badIds)
+    return badIds.length
+  }
+}
+
+/** True if the text is a single token (word/punctuation) repeated to fill the segment. */
+function isHallucinatedText(text: string): boolean {
+  const words = text.trim().split(/\s+/)
+  if (words.length < 6) return false
+  const freq = new Map<string, number>()
+  for (const w of words) {
+    const key = w.toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (key) freq.set(key, (freq.get(key) ?? 0) + 1)
+  }
+  const maxCount = Math.max(...freq.values())
+  return maxCount / words.length > 0.6
 }

@@ -13,7 +13,9 @@ import type {
   RankSpeakersArgs,
   RankSpeakersResult,
   SweepSpeakersArgs,
-  SweepSpeakersResult
+  SweepSpeakersResult,
+  CleanHallucinationsArgs,
+  CleanHallucinationsResult
 } from '@shared/ipc-types'
 import type { TranscriptRepository } from '../services/storage/repositories/TranscriptRepository'
 import type { SpeakerRepository } from '../services/storage/repositories/SpeakerRepository'
@@ -424,6 +426,18 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps): void {
         .map((s) => ({ speakerId: s.id, speakerName: s.name, confidence: 0, isVoiceMatch: false }))
 
       return { candidates: [...confirmedCandidates, ...recentCandidates] }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.transcript.cleanHallucinations,
+    (_event, args: CleanHallucinationsArgs): CleanHallucinationsResult => {
+      const removedCount = transcriptRepo.deleteHallucinatedSegments(args.recordingId)
+      const segments = transcriptRepo.findByRecordingId(args.recordingId)
+      if (removedCount > 0) {
+        getWebContents()?.send(IPC.transcript.speakersSwept, { recordingId: args.recordingId, segments })
+      }
+      return { removedCount, segments }
     }
   )
 

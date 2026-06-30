@@ -25,6 +25,7 @@ import type {
   GetExpectedSpeakersResult,
   SetExpectedSpeakersArgs,
   SetExpectedSpeakersResult,
+  GetAllTagsResult,
   ExportTranscriptArgs,
   ExportTranscriptResult,
   ExportSummaryArgs,
@@ -140,6 +141,10 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
 
   ipcMain.handle(IPC.recording.getAll, async (): Promise<GetRecordingsResult> => {
     return { recordings: recordingRepo.findAll() }
+  })
+
+  ipcMain.handle(IPC.recording.getAllTags, async (): Promise<GetAllTagsResult> => {
+    return { tags: recordingRepo.getAllTags() }
   })
 
   ipcMain.handle(IPC.recording.get, async (_event, args: GetRecordingArgs): Promise<GetRecordingResult> => {

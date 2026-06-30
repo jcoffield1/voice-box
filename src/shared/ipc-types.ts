@@ -104,6 +104,10 @@ export interface GetExpectedSpeakersResult {
   speakerIds: string[]
 }
 
+export interface GetAllTagsResult {
+  tags: string[]
+}
+
 export interface SetExpectedSpeakersArgs {
   recordingId: string
   speakerIds: string[]
@@ -167,6 +171,15 @@ export interface SweepSpeakersResult {
   updatedCount: number
 }
 
+export interface CleanHallucinationsArgs {
+  recordingId: string
+}
+
+export interface CleanHallucinationsResult {
+  removedCount: number
+  segments: import('./types').TranscriptSegment[]
+}
+
 // ─── Search IPC ──────────────────────────────────────────────────────────────
 
 export interface SearchArgs {
@@ -210,6 +223,8 @@ export interface ChatArgs {
   templateId?: string | null
   /** Human-readable name of the selected template — used in the AI system prompt. */
   templateName?: string
+  /** Filter RAG context to recordings that have ALL of these tags. */
+  tags?: string[]
 }
 
 export interface ChatResult {
@@ -379,6 +394,8 @@ export const IPC = {
     // Get/set expected speakers for speaker-constrained matching
     getExpectedSpeakers: 'recording:getExpectedSpeakers',
     setExpectedSpeakers: 'recording:setExpectedSpeakers',
+    // Get all unique tags across all recordings
+    getAllTags: 'recording:getAllTags',
     // Event pushed from main → renderer when auto-debrief is ready
     debriefReady: 'recording:debriefReady',
     // Event pushed from main → renderer when the full post-recording pipeline finishes
@@ -395,6 +412,7 @@ export const IPC = {
     assignSpeaker: 'transcript:assignSpeaker',
     rankSpeakers: 'transcript:rankSpeakers',
     sweepSpeakers: 'transcript:sweepSpeakers',
+    cleanHallucinations: 'transcript:cleanHallucinations',
     // Event pushed from main → renderer during live recording
     segmentAdded: 'transcript:segmentAdded',
     // Event pushed from main → renderer when post-recording diarization finishes

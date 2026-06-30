@@ -67,8 +67,31 @@ export class TranscriptionQueue extends EventEmitter {
     if (!this.activeRecordingId) return
     const recordingId = this.activeRecordingId
 
-    // Flush any remaining buffered audio
-    await this.whisper.flush(recordingId, (result) => this.handleResult(result))
+    // Flush remaining buffered audio, but with a hard timeout. If the Python
+    // process is stuck in a hallucination loop it can take minutes to return.
+    // After 60 s we kill and restart it — the post-recording pipeline only
+    // needs diarize.py so a fresh transcribe process is safe to start later.
+    const FLUSH_TIMEOUT_MS = 60_000
+    let timedOut = false
+    try {
+      await Promise.race([
+        this.whisper.flush(recordingId, (result) => this.handleResult(result)),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => {
+            timedOut = true
+            reject(new Error(`Transcription flush timed out after ${FLUSH_TIMEOUT_MS / 1000}s`))
+          }, FLUSH_TIMEOUT_MS)
+        )
+      ])
+    } catch (err) {
+      console.warn('[TranscriptionQueue] Final flush did not complete:', (err as Error).message)
+      if (timedOut) {
+        // Kill the stuck Python process. PythonBridge auto-restarts it for any
+        // future transcription requests (e.g. manual reprocessing).
+        console.warn('[TranscriptionQueue] Killing stuck transcribe process')
+        this.whisper.killProcess()
+      }
+    }
 
     this.activeRecordingId = null
     this.whisper.reset()

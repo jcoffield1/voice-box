@@ -5,9 +5,21 @@ import { useRecordingStore } from '../../store/recordingStore'
 import TranscriptSegmentRow from './TranscriptSegmentRow'
 import SpeakerLabelModal from './SpeakerLabelModal'
 import type { TranscriptSegment } from '@shared/types'
-import { Loader2, AlertTriangle, Eye, EyeOff, Search, ChevronUp, ChevronDown, X as XIcon } from 'lucide-react'
+import { Loader2, AlertTriangle, Eye, EyeOff, Search, ChevronUp, ChevronDown, X as XIcon, Trash2 } from 'lucide-react'
 
 const LOW_CONFIDENCE_THRESHOLD = 0.7
+
+function isHallucinatedText(text: string): boolean {
+  const words = text.trim().split(/\s+/)
+  if (words.length < 6) return false
+  const freq = new Map<string, number>()
+  for (const w of words) {
+    const key = w.toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (key) freq.set(key, (freq.get(key) ?? 0) + 1)
+  }
+  const maxCount = Math.max(...freq.values())
+  return maxCount / words.length > 0.6
+}
 
 interface Props {
   recordingId: string
@@ -42,6 +54,7 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
 
   const [assignTarget, setAssignTarget] = useState<TranscriptSegment | null>(null)
   const [reviewMode, setReviewMode] = useState(false)
+  const [cleaning, setCleaning] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchIdx, setSearchIdx] = useState(0)
   const [flashedIds, setFlashedIds] = useState<Set<string>>(new Set())
@@ -133,6 +146,24 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
   )
   const shownSegments = reviewMode ? lowConfidenceSegments : displaySegments
 
+  // Detect hallucinated segments (Whisper token-loop garbage)
+  const hallucinatedCount = !isLive
+    ? displaySegments.filter((s) => isHallucinatedText(s.text)).length
+    : 0
+
+  const handleCleanHallucinations = useCallback(async () => {
+    setCleaning(true)
+    try {
+      const { removedCount } = await window.api.transcript.cleanHallucinations({ recordingId })
+      console.log(`[TranscriptView] Removed ${removedCount} hallucinated segment(s)`)
+      await useTranscriptStore.getState().loadTranscript(recordingId)
+    } catch (err) {
+      console.error('[TranscriptView] cleanHallucinations failed:', err)
+    } finally {
+      setCleaning(false)
+    }
+  }, [recordingId])
+
   // ── Search: list of segment ids whose text contains the query (case-insensitive) ──
   const trimmedQuery = searchQuery.trim()
   const matchIds = useMemo(() => {
@@ -196,6 +227,26 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent/10 border border-accent/20 text-accent text-xs">
           <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
           <span>Analyzing recording — identifying speakers and generating summary…</span>
+        </div>
+      )}
+
+      {/* Hallucination cleanup banner */}
+      {hallucinatedCount > 0 && !isLive && (
+        <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {hallucinatedCount} segment{hallucinatedCount !== 1 ? 's' : ''} appear to be transcription errors (repeated words) — likely caused by background noise.
+            </span>
+          </div>
+          <button
+            className="shrink-0 flex items-center gap-1 px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 transition-colors"
+            onClick={() => void handleCleanHallucinations()}
+            disabled={cleaning}
+          >
+            {cleaning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+            {cleaning ? 'Cleaning…' : 'Remove'}
+          </button>
         </div>
       )}
 

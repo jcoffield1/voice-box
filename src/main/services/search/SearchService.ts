@@ -232,6 +232,10 @@ export class SearchService {
       // null means "recordings using the default" (no explicit template assigned)
       if (result.templateId !== query.templateId) return false
     }
+    if (query.tags && query.tags.length > 0) {
+      const resultTags = (result.recordingTags ?? []).map((t) => t.toLowerCase())
+      if (!query.tags.every((t) => resultTags.includes(t.toLowerCase()))) return false
+    }
     return true
   }
 

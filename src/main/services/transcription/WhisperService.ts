@@ -33,6 +33,23 @@ const BYTES_PER_SAMPLE = 2 // 16-bit PCM
 const MAX_CONTEXT_CHARS = 224
 
 /**
+ * Returns true if the text looks like a Whisper looping hallucination — i.e. a
+ * single word or short phrase repeated to fill the entire segment.
+ * Threshold: one token accounts for > 60% of all tokens in the segment.
+ */
+function isHallucination(text: string): boolean {
+  const words = text.trim().split(/\s+/)
+  if (words.length < 6) return false
+  const freq = new Map<string, number>()
+  for (const w of words) {
+    const key = w.toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (key) freq.set(key, (freq.get(key) ?? 0) + 1)
+  }
+  const maxCount = Math.max(...freq.values())
+  return maxCount / words.length > 0.6
+}
+
+/**
  * Accumulates raw PCM chunks, writes them to temp WAV files,
  * and sends to the Whisper Python subprocess for transcription.
  */
@@ -57,8 +74,10 @@ export class WhisperService {
   /** Set meeting-level vocabulary hints so Whisper prioritises known proper nouns. */
   setVocabHints(title: string, speakerNames: string[]): void {
     const parts: string[] = []
-    if (title) parts.push(`Meeting: ${title}.`)
-    if (speakerNames.length > 0) parts.push(`Participants: ${speakerNames.join(', ')}.`)
+    if (title) parts.push(title + '.')
+    // Deliberately avoid label words like "Participants:" — Whisper can latch onto
+    // the label word from the prompt and hallucinate it endlessly on noisy audio.
+    if (speakerNames.length > 0) parts.push(speakerNames.join(', ') + '.')
     this.vocabHint = parts.join(' ')
   }
 
@@ -108,12 +127,24 @@ export class WhisperService {
         initial_prompt: prompt
       })
 
-      // Update rolling context so the next chunk benefits from what was just said.
-      const chunkText = response.segments.map((s) => s.text).join(' ')
-      this.recentContext = (this.recentContext + ' ' + chunkText).slice(-MAX_CONTEXT_CHARS).trim()
+      // Filter out hallucinated segments (repeated-token loops) before updating
+      // context or emitting results. A hallucinated segment must not poison the
+      // rolling context — that would cause every subsequent chunk to loop too.
+      const cleanSegments = response.segments.filter((s) => !isHallucination(s.text))
+      if (cleanSegments.length < response.segments.length) {
+        console.warn(
+          `[Whisper] Discarded ${response.segments.length - cleanSegments.length} hallucinated segment(s)`
+        )
+      }
+
+      // Update rolling context only from clean segments.
+      if (cleanSegments.length > 0) {
+        const chunkText = cleanSegments.map((s) => s.text).join(' ')
+        this.recentContext = (this.recentContext + ' ' + chunkText).slice(-MAX_CONTEXT_CHARS).trim()
+      }
 
       onResult({
-        segments: response.segments,
+        segments: cleanSegments,
         language: response.language,
         recordingId,
         chunkDurationSeconds
@@ -128,6 +159,16 @@ export class WhisperService {
     this.bufferDurationMs = 0
     this.recentContext = ''
     this.vocabHint = ''
+  }
+
+  /**
+   * Kill the underlying Python transcribe process. Used when the process is
+   * stuck (e.g. generating a hallucination loop) and the recording must stop
+   * immediately. The PythonBridge will auto-restart the process for future use.
+   */
+  killProcess(): void {
+    this.bridge.kill('transcribe')
+    this.reset()
   }
 
   /**

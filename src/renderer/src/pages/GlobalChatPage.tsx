@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   MessageSquare, Send, Loader2, Mic, MicOff, Volume2, VolumeX,
-  Plus, Trash2, Clock, ChevronLeft, ChevronRight, Pencil, LayoutTemplate
+  Plus, Trash2, Clock, ChevronLeft, ChevronRight, Pencil, LayoutTemplate, Tag, X
 } from 'lucide-react'
 import { useAIStore } from '../store/aiStore'
 import ChatMessageBubble from '../components/ai/ChatMessageBubble'
@@ -40,8 +40,10 @@ export default function GlobalChatPage() {
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [voiceActive, setVoiceActive] = useState(false)
   const [templates, setTemplates] = useState<SummaryTemplate[]>([])
-  // '' = no filter, else explicit templateId
+  const [allTags, setAllTags] = useState<string[]>([])
+  // '' = no filter, else explicit templateId; [] = no tag filter
   const [templateFilter, setTemplateFilter] = useState<string>('')
+  const [tagFilter, setTagFilter] = useState<string[]>([])
   const providerMap = useSettingsStore((s) => s.providerMap)
   const provider = providerMap['conversation'] ?? 'ollama'
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -54,6 +56,7 @@ export default function GlobalChatPage() {
 
   useEffect(() => {
     window.api.template.getAll().then(({ templates: all }) => setTemplates(all)).catch(() => {})
+    window.api.recording.getAllTags().then(({ tags }) => setAllTags(tags)).catch(() => {})
   }, [])
 
   // Subscribe to streaming chunks for the active thread
@@ -145,8 +148,9 @@ export default function GlobalChatPage() {
     const resolvedTemplateName = templateFilter
       ? templates.find(tmpl => tmpl.id === templateFilter)?.name
       : undefined
-    await store.sendMessage(tid, t, null, '', provider, resolvedTemplateId, resolvedTemplateName)
-  }, [input, ensureThread, store, provider, templateFilter, templates])
+    const resolvedTags = tagFilter.length > 0 ? tagFilter : undefined
+    await store.sendMessage(tid, t, null, '', provider, resolvedTemplateId, resolvedTemplateName, resolvedTags)
+  }, [input, ensureThread, store, provider, templateFilter, templates, tagFilter])
 
   const handleVoiceDown = useCallback(async () => {
     if (voiceActive) return
@@ -264,54 +268,99 @@ export default function GlobalChatPage() {
       {/* ── Main chat area ─────────────────────────────────────────────────── */}
       <div className="flex flex-col flex-1 min-w-0">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-surface-700 shrink-0">
-          <div className="flex items-center gap-2">
-            <MessageSquare className="w-4 h-4 text-accent" />
-            <h1 className="text-sm font-semibold text-zinc-100">
-              {threadId && store.threads[threadId]
-                ? threadLabel(store.threads[threadId])
-                : 'AI Chat'}
-            </h1>
-            {!threadId && (
-              <span className="text-xs text-zinc-500">Cross-recording</span>
-            )}
+        <div className="border-b border-surface-700 shrink-0">
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-accent" />
+              <h1 className="text-sm font-semibold text-zinc-100">
+                {threadId && store.threads[threadId]
+                  ? threadLabel(store.threads[threadId])
+                  : 'AI Chat'}
+              </h1>
+              {!threadId && (
+                <span className="text-xs text-zinc-500">Cross-recording</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {/* Template scope filter — only meaningful in cross-recording mode */}
+              {templates.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <LayoutTemplate className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                  <select
+                    className="input text-xs py-1 pl-2 pr-6 h-7"
+                    value={templateFilter}
+                    onChange={(e) => setTemplateFilter(e.target.value)}
+                    title="Scope AI context to a template category"
+                  >
+                    <option value="">All recordings</option>
+                    {templates.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {/* Tag filter — dropdown only; chips appear in sub-row below */}
+              {allTags.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <Tag className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                  <select
+                    className="input text-xs py-1 pl-2 pr-6 h-7"
+                    value=""
+                    onChange={(e) => {
+                      const val = e.target.value
+                      if (val && !tagFilter.includes(val)) setTagFilter((prev) => [...prev, val])
+                    }}
+                    title="Filter by tag"
+                  >
+                    <option value="">{tagFilter.length === 0 ? 'All tags' : '+ add tag'}</option>
+                    {allTags.map((tag) => (
+                      <option key={tag} value={tag} disabled={tagFilter.includes(tag)}>
+                        {tagFilter.includes(tag) ? `✓ ${tag}` : tag}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <button
+                className="btn-ghost py-1.5 px-2.5 text-xs"
+                onClick={() => void handleNewChat()}
+              >
+                <Plus className="w-3.5 h-3.5 mr-1" />
+                New
+              </button>
+              <button
+                className={`btn-ghost p-1.5 ${ttsEnabled ? 'text-accent' : ''}`}
+                onClick={() => {
+                  if (ttsEnabled) void window.api.ai.stopSpeaking()
+                  setTtsEnabled((v) => !v)
+                }}
+                title={ttsEnabled ? 'Disable text-to-speech' : 'Enable text-to-speech'}
+              >
+                {ttsEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            {/* Template scope filter — only meaningful in cross-recording mode */}
-            {templates.length > 0 && (
-              <div className="flex items-center gap-1.5">
-                <LayoutTemplate className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
-                <select
-                  className="input text-xs py-1 pl-2 pr-6 h-7"
-                  value={templateFilter}
-                  onChange={(e) => setTemplateFilter(e.target.value)}
-                  title="Scope AI context to a template category"
+          {/* Active tag chips — only visible when tags are selected */}
+          {tagFilter.length > 0 && (
+            <div className="flex items-center gap-1.5 px-4 pb-2">
+              <span className="text-xs text-zinc-500 shrink-0">Tags:</span>
+              {tagFilter.map((tag) => (
+                <span
+                  key={tag}
+                  className="flex items-center gap-0.5 bg-accent/20 text-accent text-xs rounded px-1.5 py-0.5"
                 >
-                  <option value="">All recordings</option>
-                  {templates.map((t) => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            <button
-              className="btn-ghost py-1.5 px-2.5 text-xs"
-              onClick={() => void handleNewChat()}
-            >
-              <Plus className="w-3.5 h-3.5 mr-1" />
-              New
-            </button>
-            <button
-              className={`btn-ghost p-1.5 ${ttsEnabled ? 'text-accent' : ''}`}
-              onClick={() => {
-                if (ttsEnabled) void window.api.ai.stopSpeaking()
-                setTtsEnabled((v) => !v)
-              }}
-              title={ttsEnabled ? 'Disable text-to-speech' : 'Enable text-to-speech'}
-            >
-              {ttsEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-            </button>
-          </div>
+                  {tag}
+                  <button
+                    className="hover:text-accent/70 ml-0.5"
+                    onClick={() => setTagFilter((prev) => prev.filter((t) => t !== tag))}
+                    title={`Remove tag "${tag}"`}
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Messages */}
