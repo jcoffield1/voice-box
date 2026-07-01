@@ -74,6 +74,8 @@ export default function RecordingPage() {
   // Reprocess
   const [isReprocessing, setIsReprocessing] = useState(false)
   const [isReDiarizing, setIsReDiarizing] = useState(false)
+  // True only in the window between processing completing and the debrief arriving
+  const [debriefPending, setDebriefPending] = useState(false)
 
   // Playback sync: currentTime from AudioPlayer drives transcript highlight;
   // seekToSeconds is set when the user clicks a segment play button.
@@ -128,11 +130,17 @@ export default function RecordingPage() {
       if (recordingId !== id) return
       setIsReprocessing(false)
       setIsReDiarizing(false)
+      setDebriefPending(true) // debrief generation is starting now
       const { recording: updated } = await window.api.recording.get({ recordingId })
       if (updated) updateRecording(updated)
     })
     return off
   }, [id, updateRecording])
+
+  // Clear debriefPending as soon as the debrief lands in the store
+  useEffect(() => {
+    if (recording?.debrief) setDebriefPending(false)
+  }, [recording?.debrief])
 
   const saveTitle = useCallback(async () => {
     const trimmed = titleDraft.trim()
@@ -246,7 +254,10 @@ export default function RecordingPage() {
 
   if (!id) return null
 
-  const isGeneratingDebrief = (recording?.status === 'processing' || recording?.status === 'complete') && !recording?.debrief
+  // True only while actively generating: transcription in flight, or pipeline just
+  // finished and debrief hasn't arrived yet. Does NOT fire for old recordings that
+  // simply never had a debrief generated.
+  const isGeneratingDebrief = recording?.status === 'processing' || debriefPending
 
   // ── Summary tab content (shared between normal + maximized views) ──────────
   // NOTE: stored as a JSX element, not a function component, so it is never
@@ -277,7 +288,8 @@ export default function RecordingPage() {
           className="btn-ghost p-1.5 shrink-0 disabled:opacity-40"
           onClick={() => {
             if (!id || isGeneratingDebrief) return
-            void window.api.recording.regenerateDebrief({ recordingId: id }).catch(() => {})
+            setDebriefPending(true)
+            void window.api.recording.regenerateDebrief({ recordingId: id }).catch(() => setDebriefPending(false))
           }}
           disabled={!id || isGeneratingDebrief || recording?.status !== 'complete'}
           title="Regenerate summary using the current template"
@@ -302,9 +314,9 @@ export default function RecordingPage() {
       ) : (
         <div className="flex flex-col items-center justify-center py-16 gap-3 text-zinc-500">
           <FileText className="w-8 h-8 opacity-30" />
-          <p className="text-sm">No debrief available yet.</p>
+          <p className="text-sm">No debrief generated yet.</p>
           {recording?.status === 'complete' && (
-            <p className="text-xs text-zinc-600">A full debrief is generated automatically after transcription finishes.</p>
+            <p className="text-xs text-zinc-600">Click the refresh button above to generate one.</p>
           )}
         </div>
       )}
