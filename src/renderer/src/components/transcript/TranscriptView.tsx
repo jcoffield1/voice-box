@@ -146,6 +146,13 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
   )
   const shownSegments = reviewMode ? lowConfidenceSegments : displaySegments
 
+  // Auto-exit review mode once every unidentified segment has been resolved
+  useEffect(() => {
+    if (reviewMode && lowConfidenceSegments.length === 0) {
+      setReviewMode(false)
+    }
+  }, [reviewMode, lowConfidenceSegments.length])
+
   // Detect hallucinated segments (Whisper token-loop garbage)
   const hallucinatedCount = !isLive
     ? displaySegments.filter((s) => isHallucinatedText(s.text)).length

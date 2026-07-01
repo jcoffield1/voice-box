@@ -57,6 +57,8 @@ export default function RecordingPage() {
   // Tags
   const [tags, setTags] = useState<string[]>(recording?.tags ?? [])
   const [tagInput, setTagInput] = useState('')
+  const [allTags, setAllTags] = useState<string[]>([])
+  const [activeSuggestion, setActiveSuggestion] = useState(-1)
   const tagInputRef = useRef<HTMLInputElement>(null)
   const notesTextareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -105,6 +107,7 @@ export default function RecordingPage() {
 
   useEffect(() => {
     window.api.template.getAll().then(({ templates: list }) => setTemplates(list)).catch(() => {})
+    window.api.recording.getAllTags().then(({ tags: t }) => setAllTags(t)).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -154,12 +157,18 @@ export default function RecordingPage() {
 
   const addTag = useCallback(async (raw: string) => {
     const value = raw.trim().replace(/,+$/, '').trim()
-    if (!value || tags.includes(value)) { setTagInput(''); return }
-    const next = [...tags, value]
+    if (!value) { setTagInput(''); setActiveSuggestion(-1); return }
+    // Prefer the casing of an existing global tag if it matches case-insensitively
+    const existingGlobal = allTags.find((t) => t.toLowerCase() === value.toLowerCase())
+    const normalized = existingGlobal ?? value
+    // Skip if already on this recording (case-insensitive)
+    if (tags.some((t) => t.toLowerCase() === normalized.toLowerCase())) { setTagInput(''); setActiveSuggestion(-1); return }
+    const next = [...tags, normalized]
     setTags(next)
     setTagInput('')
+    setActiveSuggestion(-1)
     await persistTags(next)
-  }, [tags, persistTags])
+  }, [tags, allTags, persistTags])
 
   const removeTag = useCallback(async (tag: string) => {
     const next = tags.filter((t) => t !== tag)
@@ -329,35 +338,83 @@ export default function RecordingPage() {
           <Tag className="w-3.5 h-3.5" />
           Tags
         </label>
-        <div
-          className="input flex flex-wrap gap-1.5 min-h-[2.25rem] cursor-text py-1.5 px-2"
-          onClick={() => tagInputRef.current?.focus()}
-        >
-          {tags.map((tag) => (
-            <span key={tag} className="inline-flex items-center gap-1 text-xs bg-accent/20 text-accent rounded-full pl-2 pr-1 py-0.5 border border-accent/30">
-              {tag}
-              <button
-                type="button"
-                className="hover:text-white transition-colors"
-                onClick={(e) => { e.stopPropagation(); void removeTag(tag) }}
-                aria-label={`Remove ${tag}`}
-              >
-                <X className="w-2.5 h-2.5" />
-              </button>
-            </span>
-          ))}
-          <input
-            ref={tagInputRef}
-            className="flex-1 min-w-[8rem] bg-transparent outline-none text-sm text-zinc-100 placeholder-zinc-600"
-            placeholder={tags.length === 0 ? 'Add tags… press Enter or comma to add' : ''}
-            value={tagInput}
-            onChange={(e) => setTagInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); void addTag(tagInput) }
-              if (e.key === 'Backspace' && tagInput === '' && tags.length > 0) void removeTag(tags[tags.length - 1])
-            }}
-            onBlur={() => { if (tagInput.trim()) void addTag(tagInput) }}
-          />
+        <div className="relative">
+          <div
+            className="input flex flex-wrap gap-1.5 min-h-[2.25rem] cursor-text py-1.5 px-2"
+            onClick={() => tagInputRef.current?.focus()}
+          >
+            {tags.map((tag) => (
+              <span key={tag} className="inline-flex items-center gap-1 text-xs bg-accent/20 text-accent rounded-full pl-2 pr-1 py-0.5 border border-accent/30">
+                {tag}
+                <button
+                  type="button"
+                  className="hover:text-white transition-colors"
+                  onClick={(e) => { e.stopPropagation(); void removeTag(tag) }}
+                  aria-label={`Remove ${tag}`}
+                >
+                  <X className="w-2.5 h-2.5" />
+                </button>
+              </span>
+            ))}
+            {(() => {
+              const tagSuggestions = tagInput.trim()
+                ? allTags.filter(
+                    (t) =>
+                      t.toLowerCase().includes(tagInput.trim().toLowerCase()) &&
+                      !tags.some((existing) => existing.toLowerCase() === t.toLowerCase())
+                  )
+                : []
+              return (
+                <>
+                  <input
+                    ref={tagInputRef}
+                    className="flex-1 min-w-[8rem] bg-transparent outline-none text-sm text-zinc-100 placeholder-zinc-600"
+                    placeholder={tags.length === 0 ? 'Add tags… press Enter or comma to add' : ''}
+                    value={tagInput}
+                    onChange={(e) => { setTagInput(e.target.value); setActiveSuggestion(-1) }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        setActiveSuggestion((i) => Math.min(i + 1, tagSuggestions.length - 1))
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        setActiveSuggestion((i) => Math.max(i - 1, -1))
+                      } else if (e.key === 'Escape') {
+                        setActiveSuggestion(-1)
+                        setTagInput('')
+                      } else if (e.key === 'Enter' || e.key === ',') {
+                        e.preventDefault()
+                        void addTag(activeSuggestion >= 0 && tagSuggestions[activeSuggestion]
+                          ? tagSuggestions[activeSuggestion]
+                          : tagInput)
+                      } else if (e.key === 'Backspace' && tagInput === '' && tags.length > 0) {
+                        void removeTag(tags[tags.length - 1])
+                      }
+                    }}
+                    onBlur={() => { if (tagInput.trim()) void addTag(tagInput) }}
+                  />
+                  {tagSuggestions.length > 0 && (
+                    <ul className="absolute left-0 right-0 top-full mt-1 z-20 bg-surface-700 border border-surface-600 rounded-lg shadow-lg overflow-hidden">
+                      {tagSuggestions.map((suggestion, i) => (
+                        <li
+                          key={suggestion}
+                          className={`px-3 py-1.5 text-sm cursor-pointer ${
+                            i === activeSuggestion
+                              ? 'bg-accent/20 text-accent'
+                              : 'text-zinc-300 hover:bg-surface-600'
+                          }`}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => void addTag(suggestion)}
+                        >
+                          {suggestion}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )
+            })()}
+          </div>
         </div>
       </div>
 
