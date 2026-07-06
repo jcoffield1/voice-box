@@ -437,6 +437,12 @@ function initServices(): void {
       })
     }
 
+    // Always push the raw segment to the renderer immediately so the live
+    // transcript view shows text as it arrives, regardless of whether
+    // speaker identification succeeds. If live-ID later assigns a speaker,
+    // a second send below will update the existing entry in the store.
+    mainWindow?.webContents.send(IPC.transcript.segmentAdded, segment)
+
     // Live speaker auto-assignment ────────────────────────────────────────────
     // Skip if no stored voice embeddings exist yet.
     if (speakerRepo.findWithEmbeddings().length === 0) return
