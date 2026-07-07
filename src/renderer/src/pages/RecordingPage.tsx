@@ -130,9 +130,15 @@ export default function RecordingPage() {
       if (recordingId !== id) return
       setIsReprocessing(false)
       setIsReDiarizing(false)
-      setDebriefPending(true) // debrief generation is starting now
+      setDebriefPending(true)
       const { recording: updated } = await window.api.recording.get({ recordingId })
-      if (updated) updateRecording(updated)
+      if (updated) {
+        updateRecording(updated)
+        // debriefReady can arrive before processed — if debrief is already in
+        // the store, the [recording?.debrief] effect won't re-fire (dependency
+        // unchanged), so clear the flag here explicitly.
+        if (updated.debrief) setDebriefPending(false)
+      }
     })
     return off
   }, [id, updateRecording])

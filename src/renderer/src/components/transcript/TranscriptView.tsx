@@ -59,6 +59,20 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
   const [searchIdx, setSearchIdx] = useState(0)
   const [flashedIds, setFlashedIds] = useState<Set<string>>(new Set())
 
+  // In review mode: stop playback at this timestamp.
+  //   reviewSeekFromRef  — playbackSeconds at the moment of the click, used to
+  //                        detect when the first fresh timeupdate has arrived so
+  //                        a stale value sitting at the old end doesn't misfire.
+  //   reviewSeekLandedRef — true once we've confirmed the seek has landed and
+  //                         playbackSeconds is actively inside the segment window.
+  const reviewStopAtRef = useRef<number | null>(null)
+  const reviewSeekFromRef = useRef<number | undefined>(undefined)
+  const reviewSeekLandedRef = useRef(false)
+  // Keep a ref of playbackSeconds so effectiveOnSeek can snapshot it without
+  // adding the fast-changing prop to the callback's dependency array.
+  const playbackSecondsRef = useRef(playbackSeconds)
+  playbackSecondsRef.current = playbackSeconds
+
   // Snapshot of speaker assignments used to detect which segments changed after a sweep
   const speakerSnapshotRef = useRef<Map<string, string | null>>(new Map())
   const diarizationError = useRecordingStore((s) => s.diarizationError)
@@ -140,18 +154,70 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
     }
   }, [jumpToSeconds, displaySegments])
 
-  // Count low-confidence speaker assignments
-  const lowConfidenceSegments = displaySegments.filter(
-    (seg) => seg.speakerConfidence !== null && seg.speakerConfidence < LOW_CONFIDENCE_THRESHOLD
-  )
-  const shownSegments = reviewMode ? lowConfidenceSegments : displaySegments
+  // In review mode: wrap onSeek so each segment play click sets a stop point at
+  // that segment's end, then auto-pause when playback reaches it.
+  const effectiveOnSeek = useCallback((seconds: number) => {
+    if (reviewMode) {
+      const seg = displaySegments.find((s) => s.timestampStart === seconds)
+      reviewStopAtRef.current = seg?.timestampEnd ?? null
+      reviewSeekFromRef.current = playbackSecondsRef.current
+      reviewSeekLandedRef.current = false
+    } else {
+      reviewStopAtRef.current = null
+      reviewSeekFromRef.current = undefined
+      reviewSeekLandedRef.current = false
+    }
+    onSeek?.(seconds)
+  }, [reviewMode, displaySegments, onSeek])
 
-  // Auto-exit review mode once every unidentified segment has been resolved
   useEffect(() => {
-    if (reviewMode && lowConfidenceSegments.length === 0) {
+    if (!reviewMode || !isAudioPlaying || playbackSeconds == null || reviewStopAtRef.current == null) return
+    const stopAt = reviewStopAtRef.current
+
+    if (!reviewSeekLandedRef.current) {
+      // Phase 1: ignore until playbackSeconds changes from its click-time value.
+      // This prevents a stale value sitting at the previous segment's end from
+      // triggering an immediate pause before the seek has even happened.
+      if (playbackSeconds === reviewSeekFromRef.current) return
+
+      // Phase 2: first fresh timeupdate has arrived.
+      if (playbackSeconds < stopAt) {
+        // Seek landed inside the segment window — start watching for the end.
+        reviewSeekLandedRef.current = true
+      } else {
+        // Seek landed past the end (very short segment, timeupdate skipped the
+        // boundary) — pause immediately.
+        reviewStopAtRef.current = null
+        reviewSeekFromRef.current = undefined
+        onPause?.()
+      }
+      return
+    }
+
+    // Phase 3: seek has landed; stop when we reach the end.
+    if (playbackSeconds >= stopAt) {
+      reviewStopAtRef.current = null
+      reviewSeekFromRef.current = undefined
+      reviewSeekLandedRef.current = false
+      onPause?.()
+    }
+  }, [reviewMode, isAudioPlaying, playbackSeconds, onPause])
+
+  // Segments that need speaker review: unassigned, raw SPEAKER_XX labels, or low confidence
+  const reviewableSegments = displaySegments.filter(
+    (seg) =>
+      !seg.speakerId ||
+      /^SPEAKER_\d+$/.test(seg.speakerId) ||
+      (seg.speakerConfidence !== null && seg.speakerConfidence < LOW_CONFIDENCE_THRESHOLD)
+  )
+  const shownSegments = reviewMode ? reviewableSegments : displaySegments
+
+  // Auto-exit review mode once every segment has been resolved
+  useEffect(() => {
+    if (reviewMode && reviewableSegments.length === 0) {
       setReviewMode(false)
     }
-  }, [reviewMode, lowConfidenceSegments.length])
+  }, [reviewMode, reviewableSegments.length])
 
   // Detect hallucinated segments (Whisper token-loop garbage)
   const hallucinatedCount = !isLive
@@ -268,13 +334,13 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
         </div>
       )}
 
-      {/* Low-confidence review banner */}
-      {!isLive && lowConfidenceSegments.length > 0 && (
+      {/* Review banner */}
+      {!isLive && reviewableSegments.length > 0 && (
         <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             <span>
-              {lowConfidenceSegments.length} segment{lowConfidenceSegments.length !== 1 ? 's' : ''} with uncertain speaker assignments
+              {reviewableSegments.length} segment{reviewableSegments.length !== 1 ? 's' : ''} need speaker review
             </span>
           </div>
           <button
@@ -368,7 +434,7 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
               segment={seg}
               onLabelSpeaker={() => setAssignTarget(seg)}
               playbackSeconds={!isLive ? playbackSeconds : undefined}
-              onSeek={!isLive ? onSeek : undefined}
+              onSeek={!isLive ? effectiveOnSeek : undefined}
               onPause={!isLive ? onPause : undefined}
               onResume={!isLive ? onResume : undefined}
               isAudioPlaying={!isLive ? isAudioPlaying : false}
@@ -398,7 +464,7 @@ export default function TranscriptView({ recordingId, isLive, jumpToSeconds, pla
               // scroll position is preserved. The background sweep will push any
               // additional auto-assignments via speakersSwept.
               const store = useTranscriptStore.getState()
-              store.updateSegment({ ...assignTarget, speakerName, speakerId: profileId ?? assignTarget.speakerId ?? speakerName })
+              store.updateSegment({ ...assignTarget, speakerName, speakerId: profileId ?? assignTarget.speakerId ?? speakerName, speakerConfidence: null })
             } catch (err) {
               console.error('[TranscriptView] assignSpeaker failed:', err)
             } finally {

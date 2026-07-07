@@ -13,7 +13,9 @@ export default function SpeakerPickerModal({ selectedIds, onSave, onClose }: Pro
   const [checked, setChecked] = useState<Set<string>>(new Set(selectedIds))
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
+  const [justCreatedId, setJustCreatedId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const newRowRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     window.api.speaker.getAll().then(({ speakers }) => setAllSpeakers(speakers))
@@ -22,6 +24,14 @@ export default function SpeakerPickerModal({ selectedIds, onSave, onClose }: Pro
   useEffect(() => {
     inputRef.current?.focus()
   }, [allSpeakers])
+
+  // Scroll newly-created speaker into view and clear the highlight after 2 s
+  useEffect(() => {
+    if (!justCreatedId) return
+    newRowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    const t = setTimeout(() => setJustCreatedId(null), 2000)
+    return () => clearTimeout(t)
+  }, [justCreatedId])
 
   const toggle = (id: string) => {
     setChecked((prev) => {
@@ -40,6 +50,7 @@ export default function SpeakerPickerModal({ selectedIds, onSave, onClose }: Pro
       const { speaker } = await window.api.speaker.create({ name })
       setAllSpeakers((prev) => [...prev, speaker])
       setChecked((prev) => new Set(prev).add(speaker.id))
+      setJustCreatedId(speaker.id)
       setQuery('')
     } finally {
       setCreating(false)
@@ -94,14 +105,18 @@ export default function SpeakerPickerModal({ selectedIds, onSave, onClose }: Pro
         <div className="flex-1 overflow-y-auto min-h-0 space-y-0.5 mb-4 max-h-[40vh]">
           {filtered.map((sp) => {
             const isChecked = checked.has(sp.id)
+            const isNew = sp.id === justCreatedId
             return (
               <button
                 key={sp.id}
+                ref={isNew ? newRowRef : undefined}
                 onClick={() => toggle(sp.id)}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm transition-colors ${
-                  isChecked
-                    ? 'bg-accent/15 text-zinc-100'
-                    : 'hover:bg-surface-700 text-zinc-400'
+                  isNew
+                    ? 'bg-accent/25 text-zinc-100 ring-1 ring-accent/50'
+                    : isChecked
+                      ? 'bg-accent/15 text-zinc-100'
+                      : 'hover:bg-surface-700 text-zinc-400'
                 }`}
               >
                 <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${
@@ -112,7 +127,8 @@ export default function SpeakerPickerModal({ selectedIds, onSave, onClose }: Pro
                   {isChecked && <Check className="w-3.5 h-3.5 text-white" />}
                 </div>
                 <span className="flex-1 truncate">{sp.name}</span>
-                {sp.voiceEmbedding && <span className="text-[10px] opacity-40">🎤 voice trained</span>}
+                {isNew && <span className="text-[10px] text-accent/70 shrink-0">added ✓</span>}
+                {!isNew && sp.voiceEmbedding && <span className="text-[10px] opacity-40">🎤 voice trained</span>}
               </button>
             )
           })}
