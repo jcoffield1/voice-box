@@ -33,8 +33,8 @@ A local-first Electron desktop application for macOS that records calls and meet
 | **Speaker profiles** | Voice embeddings auto-match returning speakers across recordings |
 | **Transcript refinement** | Optional LLM pass corrects Whisper errors in proper nouns and speaker names |
 | **Semantic search** | Vector similarity search over your entire transcript corpus |
-| **Conversational AI** | Ask questions about any recording or across all recordings |
-| **Auto-debrief** | Structured meeting summary auto-generated after each recording |
+| **Conversational AI** | Ask questions about any recording or across all recordings; Global AI Chat supports multi-tag filtering to scope questions to a subset of recordings |
+| **Auto-debrief** | Structured meeting summary auto-generated after each recording; regenerate at any time via the refresh button |
 | **Export** | Export transcripts as plain text, Markdown, or SRT subtitles |
 | **LLM flexibility** | Swap between Ollama (local), Claude API, and OpenAI API at runtime |
 | **Model hints** | Settings shows recommended Ollama models per feature with one-click pull |
