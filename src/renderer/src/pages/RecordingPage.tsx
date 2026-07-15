@@ -8,6 +8,7 @@ import type { SummaryTemplate } from '@shared/types'
 import TranscriptView from '../components/transcript/TranscriptView'
 import AIPanel from '../components/ai/AIPanel'
 import AudioPlayer from '../components/recording/AudioPlayer'
+import VideoPanel from '../components/recording/VideoPanel'
 import RecordingSpeakersBar from '../components/recording/RecordingSpeakersBar'
 import { useRecordingStore } from '../store/recordingStore'
 import DictationButton from '../components/notes/DictationButton'
@@ -89,6 +90,22 @@ export default function RecordingPage() {
   // Incremented to ask the AudioPlayer to resume from its current position.
   const [playSignal, setPlaySignal] = useState(0)
   const [isAudioPlaying, setIsAudioPlaying] = useState(false)
+
+  // Video panel visibility (auto-shows when recording has a video)
+  const [showVideoPanel, setShowVideoPanel] = useState(true)
+
+  const handleDeleteVideo = useCallback(async () => {
+    if (!id) return
+    await window.api.recording.deleteVideo({ recordingId: id })
+    const { recording: updated } = await window.api.recording.get({ recordingId: id })
+    if (updated) updateRecording(updated)
+    setShowVideoPanel(false)
+  }, [id, updateRecording])
+
+  // Re-show video panel whenever recording gains a videoPath (e.g. after stop)
+  useEffect(() => {
+    if (recording?.videoPath) setShowVideoPanel(true)
+  }, [recording?.videoPath])
 
   const requestSeek = useCallback((t: number) => {
     setSeekToSeconds(t)
@@ -780,9 +797,22 @@ export default function RecordingPage() {
           </div>
         </div>
 
-        {/* Right: AI panel */}
-        <div className="w-80 flex-shrink-0">
-          <AIPanel recordingId={id} initialMessage={askParam} onMaximize={() => setMaximized('ai')} />
+        {/* Right: video panel (when present) above AI panel */}
+        <div className="w-80 flex-shrink-0 flex flex-col gap-4 min-h-0">
+          {recording?.videoPath && showVideoPanel && (
+            <VideoPanel
+              src={`vbfile://localhost${encodeURI(recording.videoPath)}`}
+              playbackSeconds={playbackSeconds}
+              seekNonce={seekNonce}
+              isAudioPlaying={isAudioPlaying}
+              offsetSeconds={(recording.videoOffsetMs ?? 0) / 1000}
+              onClose={() => setShowVideoPanel(false)}
+              onDelete={handleDeleteVideo}
+            />
+          )}
+          <div className="flex-1 min-h-0">
+            <AIPanel recordingId={id} initialMessage={askParam} onMaximize={() => setMaximized('ai')} />
+          </div>
         </div>
       </div>
     </>

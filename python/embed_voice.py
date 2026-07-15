@@ -48,6 +48,16 @@ def _init_backend() -> None:
     if _backend is not None:
         return
 
+    # Suppress pyannote's noisy import-time torchcodec warning — audio is
+    # decoded with PyAV here, torchcodec is never used. The message begins
+    # with a newline, hence the (?s).* prefix (filterwarnings anchors at start).
+    import warnings
+    warnings.filterwarnings(
+        'ignore',
+        message=r'(?s).*torchcodec is not installed',
+        category=UserWarning,
+    )
+
     hf_token = os.environ.get("HF_TOKEN")
 
     if hf_token:

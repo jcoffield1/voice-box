@@ -18,6 +18,7 @@ interface RecordingTitleRow {
   template_id: string | null
   notes: string | null
   tags: string
+  video_mode: string | null
 }
 
 const DEFAULT_LIMIT = 20
@@ -149,7 +150,7 @@ export class SearchService {
     matchType: SearchResult['matchType']
   ): SearchResult {
     const recording = this.db
-      .prepare<string, RecordingTitleRow>(`SELECT id, title, template_id, notes, tags FROM recordings WHERE id = ?`)
+      .prepare<string, RecordingTitleRow>(`SELECT id, title, template_id, notes, tags, video_mode FROM recordings WHERE id = ?`)
       .get(row.recording_id)
 
     const snippet = row.text.length > 200 ? row.text.slice(0, 200) + '…' : row.text
@@ -161,6 +162,7 @@ export class SearchService {
       templateId: recording?.template_id ?? null,
       recordingNotes: recording?.notes ?? null,
       recordingTags: JSON.parse(recording?.tags ?? '[]') as string[],
+      recordingVideoMode: (recording?.video_mode as SearchResult['recordingVideoMode']) ?? null,
       text: row.text,
       speakerName: row.speaker_name,
       timestampStart: row.timestamp_start,
@@ -227,6 +229,10 @@ export class SearchService {
 
   private matchesFilters(result: SearchResult, query: SearchQuery): boolean {
     if (query.recordingId && result.recordingId !== query.recordingId) return false
+    // Webcam journals are excluded from cross-recording search by default.
+    // A recording-scoped query (recordingId set) bypasses this — searching
+    // within a journal you opened should always work.
+    if (!query.includeJournals && !query.recordingId && result.recordingVideoMode === 'webcam') return false
     if (query.speakerName && result.speakerName?.toLowerCase() !== query.speakerName.toLowerCase()) return false
     if ('templateId' in query) {
       // null means "recordings using the default" (no explicit template assigned)

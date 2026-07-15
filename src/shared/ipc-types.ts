@@ -15,6 +15,7 @@ import type {
   LLMProviderType,
   LLMFeature,
   SummaryTemplate,
+  VideoMode,
 } from './types'
 
 // ─── Recording IPC ───────────────────────────────────────────────────────────
@@ -26,10 +27,49 @@ export interface StartRecordingArgs {
    *  matching is constrained to only these speakers during live-ID, diarization,
    *  and all post-recording sweeps. Empty array = match against all speakers. */
   expectedSpeakerIds?: string[]
+  /** Video capture mode. Defaults to 'none' (audio only). */
+  videoMode?: VideoMode
+}
+
+// ─── Video IPC ────────────────────────────────────────────────────────────────
+
+export interface ScreenSource {
+  id: string
+  name: string
+  thumbnailDataUrl: string
+  /** true = full display, false = application window */
+  isScreen: boolean
+}
+
+export interface GetScreenSourcesResult {
+  sources: ScreenSource[]
+}
+
+export interface SaveVideoChunkArgs {
+  recordingId: string
+  chunk: Uint8Array
+}
+
+export interface VideoCompleteArgs {
+  recordingId: string
+  /** Milliseconds between audio capture start and video capture start,
+   *  measured in the renderer. Used to sync playback timelines. */
+  offsetMs?: number
+}
+
+export interface DeleteVideoArgs {
+  recordingId: string
+}
+
+export interface DeleteVideoResult {
+  deleted: boolean
 }
 
 export interface StartRecordingResult {
   recordingId: string
+  /** Date.now() in the main process at the moment audio capture began.
+   *  Used as the audio-timeline origin for A/V sync measurement. */
+  audioStartedAt: number
 }
 
 export interface StopRecordingArgs {
@@ -225,6 +265,8 @@ export interface ChatArgs {
   templateName?: string
   /** Filter RAG context to recordings that have ALL of these tags. */
   tags?: string[]
+  /** Include webcam journal recordings in RAG context. Default false. */
+  includeJournals?: boolean
 }
 
 export interface ChatResult {
@@ -404,7 +446,12 @@ export const IPC = {
     import: 'recording:import',
     // Re-transcribe and re-diarize an existing recording from its saved audio file
     reprocessRecording: 'recording:reprocessRecording',
-    reDiarize: 'recording:reDiarize'
+    reDiarize: 'recording:reDiarize',
+    // Video recording channels
+    getScreenSources: 'recording:getScreenSources',
+    saveVideoChunk: 'recording:saveVideoChunk',
+    videoComplete: 'recording:videoComplete',
+    deleteVideo: 'recording:deleteVideo'
   },
   transcript: {
     get: 'transcript:get',

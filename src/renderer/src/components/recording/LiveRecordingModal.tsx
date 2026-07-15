@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Mic, Square, Monitor, X, UserPlus, User, Loader2, Pause, Play, Plus, Users, Trash2 } from 'lucide-react'
+import {
+  Mic, Square, Monitor, X, UserPlus, User, Loader2, Pause, Play,
+  Plus, Users, Trash2, Video, Camera, Layers, Check
+} from 'lucide-react'
 import { useRecordingStore } from '../../store/recordingStore'
 import { useSettingsStore } from '../../store/settingsStore'
 import { useTranscriptStore } from '../../store/transcriptStore'
 import AudioLevelBar from './AudioLevelBar'
 import { useMicPreview } from '../../hooks/useMicPreview'
 import SpeakerLabelModal from '../transcript/SpeakerLabelModal'
-import type { TranscriptSegment, SpeakerProfile } from '@shared/types'
+import type { TranscriptSegment, SpeakerProfile, VideoMode } from '@shared/types'
+import type { ScreenSource } from '@shared/ipc-types'
 
 interface Props {
   onClose: () => void
@@ -29,6 +33,89 @@ function isRawLabel(id: string | null): boolean {
   return id != null && /^SPEAKER_\d+$/.test(id)
 }
 
+function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.moveTo(x + r, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
+}
+
+/** Fraction of the canvas width the webcam bubble occupies. */
+const PIP_WIDTH_FRACTION = 0.22
+/** Margin around the bubble as a fraction of canvas width. */
+const PIP_MARGIN_FRACTION = 0.02
+
+interface PipRect { x: number; y: number; w: number; h: number }
+
+/**
+ * Composite the screen stream and webcam stream onto a canvas: screen
+ * full-frame, webcam as a rounded "bubble" whose position is read from
+ * pipPosRef every frame (normalized 0–1 within the available area, so
+ * dragging the preview moves the bubble in the recording live).
+ */
+async function createPipComposite(
+  screenStream: MediaStream,
+  camStream: MediaStream,
+  pipPosRef: React.MutableRefObject<{ x: number; y: number }>,
+  pipRectRef: React.MutableRefObject<PipRect | null>
+): Promise<{ stream: MediaStream; cleanup: () => void }> {
+  const screenVideo = document.createElement('video')
+  screenVideo.srcObject = screenStream
+  screenVideo.muted = true
+  const camVideo = document.createElement('video')
+  camVideo.srcObject = camStream
+  camVideo.muted = true
+  await Promise.all([screenVideo.play(), camVideo.play()])
+
+  const W = screenVideo.videoWidth || 1920
+  const H = screenVideo.videoHeight || 1080
+  const canvas = document.createElement('canvas')
+  canvas.width = W
+  canvas.height = H
+  const ctx = canvas.getContext('2d')!
+
+  let raf = 0
+  const draw = () => {
+    ctx.drawImage(screenVideo, 0, 0, W, H)
+    const camW = camVideo.videoWidth
+    const camH = camVideo.videoHeight
+    if (camW && camH) {
+      const pw = W * PIP_WIDTH_FRACTION
+      const ph = pw * (camH / camW)
+      const margin = W * PIP_MARGIN_FRACTION
+      const x = margin + pipPosRef.current.x * Math.max(0, W - pw - 2 * margin)
+      const y = margin + pipPosRef.current.y * Math.max(0, H - ph - 2 * margin)
+      pipRectRef.current = { x, y, w: pw, h: ph }
+      const r = pw * 0.06
+      ctx.save()
+      ctx.beginPath()
+      roundRectPath(ctx, x, y, pw, ph, r)
+      ctx.clip()
+      ctx.drawImage(camVideo, x, y, pw, ph)
+      ctx.restore()
+      ctx.beginPath()
+      roundRectPath(ctx, x, y, pw, ph, r)
+      ctx.lineWidth = Math.max(2, W / 800)
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+      ctx.stroke()
+    }
+    raf = requestAnimationFrame(draw)
+  }
+  draw()
+
+  return {
+    stream: canvas.captureStream(30),
+    cleanup: () => {
+      cancelAnimationFrame(raf)
+      screenVideo.srcObject = null
+      camVideo.srcObject = null
+      pipRectRef.current = null
+    }
+  }
+}
+
 export default function LiveRecordingModal({ onClose }: Props) {
   const [title, setTitle] = useState('')
   const [systemAudio, setSystemAudio] = useState(false)
@@ -37,6 +124,47 @@ export default function LiveRecordingModal({ onClose }: Props) {
   const [startError, setStartError] = useState<string | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [assignTarget, setAssignTarget] = useState<TranscriptSegment | null>(null)
+
+  // Video mode
+  const [videoMode, setVideoMode] = useState<VideoMode>('none')
+  const [screenSources, setScreenSources] = useState<ScreenSource[]>([])
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
+  const [fetchingSources, setFetchingSources] = useState(false)
+  const [videoError, setVideoError] = useState<string | null>(null)
+  // Webcam PIP overlay for screen recordings ("show me in the corner")
+  const [pipCam, setPipCam] = useState(false)
+
+  // Video recording internals
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const videoStreamRef = useRef<MediaStream | null>(null)
+  // Underlying device streams (screen/camera) — stopped separately from the
+  // composite canvas stream so the camera light reliably turns off
+  const rawStreamsRef = useRef<MediaStream[]>([])
+  // Tears down the PIP compositor (rAF loop + detached video elements)
+  const compositeCleanupRef = useRef<(() => void) | null>(null)
+  // PIP bubble position, normalized 0–1 within the available canvas area
+  const pipPosRef = useRef({ x: 1, y: 1 })
+  // Bubble rect in canvas pixels, updated each frame — used for drag hit-tests
+  const pipRectRef = useRef<PipRect | null>(null)
+  // Pointer offset within the bubble while dragging
+  const pipDragRef = useRef<{ dx: number; dy: number } | null>(null)
+  // Serialise chunk IPC writes to avoid out-of-order writes
+  const chunkQueueRef = useRef<Promise<void>>(Promise.resolve())
+  // A/V sync: audio starts (main process) before video (camera/screen warm-up).
+  // Measure the gap so playback can shift the video timeline to match.
+  const audioStartTsRef = useRef<number | null>(null)
+  const videoOffsetMsRef = useRef<number>(0)
+  // Live self-view: the active capture stream, mirrored into a <video> preview
+  const [previewStream, setPreviewStream] = useState<MediaStream | null>(null)
+  const previewVideoRef = useRef<HTMLVideoElement>(null)
+
+  // Attach the capture stream to the preview element whenever either changes
+  useEffect(() => {
+    const video = previewVideoRef.current
+    if (!video) return
+    video.srcObject = previewStream
+    if (previewStream) void video.play().catch(() => {})
+  }, [previewStream])
 
   // Expected speakers management
   const [allSpeakers, setAllSpeakers] = useState<SpeakerProfile[]>([])
@@ -62,6 +190,44 @@ export default function LiveRecordingModal({ onClose }: Props) {
     window.api.speaker.getAll().then(({ speakers }) => setAllSpeakers(speakers))
   }, [])
 
+  // Safety net: release the camera/screen streams if the modal unmounts
+  // without a clean stop (e.g. recording crashed)
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current?.state !== 'inactive') {
+        try { mediaRecorderRef.current?.stop() } catch { /* already stopped */ }
+      }
+      compositeCleanupRef.current?.()
+      compositeCleanupRef.current = null
+      videoStreamRef.current?.getTracks().forEach((t) => t.stop())
+      videoStreamRef.current = null
+      rawStreamsRef.current.forEach((s) => s.getTracks().forEach((t) => t.stop()))
+      rawStreamsRef.current = []
+    }
+  }, [])
+
+  // Fetch screen sources whenever screen mode is selected
+  useEffect(() => {
+    if (videoMode !== 'screen') {
+      setScreenSources([])
+      setSelectedSourceId(null)
+      return
+    }
+    setFetchingSources(true)
+    setVideoError(null)
+    window.api.recording.getScreenSources()
+      .then(({ sources }) => {
+        setScreenSources(sources)
+        // Auto-select the first full-screen source if available
+        const firstScreen = sources.find((s) => s.isScreen)
+        if (firstScreen) setSelectedSourceId(firstScreen.id)
+      })
+      .catch((e: unknown) => {
+        setVideoError(e instanceof Error ? e.message : 'Could not list screen sources. Grant Screen Recording permission in System Settings → Privacy & Security.')
+      })
+      .finally(() => setFetchingSources(false))
+  }, [videoMode])
+
   // Close (and navigate to recording page) when recording stops externally (error / crash)
   const postProcessingRecordingId = useRecordingStore((s) => s.postProcessingRecordingId)
   useEffect(() => {
@@ -85,8 +251,120 @@ export default function LiveRecordingModal({ onClose }: Props) {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [liveSegments.length])
 
+  const startVideoCapture = useCallback(async (recordingId: string): Promise<void> => {
+    try {
+      let stream: MediaStream
+
+      if (videoMode === 'screen' && selectedSourceId) {
+        const screenStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: selectedSourceId,
+            }
+          } as unknown as MediaTrackConstraints
+        })
+        rawStreamsRef.current = [screenStream]
+        stream = screenStream
+
+        if (pipCam) {
+          try {
+            const camStream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: { facingMode: 'user' }
+            })
+            rawStreamsRef.current.push(camStream)
+            pipPosRef.current = { x: 1, y: 1 } // lower-right corner
+            const composite = await createPipComposite(screenStream, camStream, pipPosRef, pipRectRef)
+            compositeCleanupRef.current = composite.cleanup
+            stream = composite.stream
+          } catch (e) {
+            console.error('[LiveRecordingModal] Webcam overlay failed:', e)
+            setVideoError('Webcam overlay unavailable — recording screen only.')
+          }
+        }
+      } else if (videoMode === 'webcam') {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: 'user', aspectRatio: { ideal: 9 / 16 } }
+        })
+        rawStreamsRef.current = [stream]
+      } else {
+        return
+      }
+
+      videoStreamRef.current = stream
+      setPreviewStream(stream)
+      chunkQueueRef.current = Promise.resolve()
+
+      // Prefer VP9 for best Chromium compatibility; fall back to whatever is supported
+      const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9')
+        ? 'video/webm; codecs=vp9'
+        : 'video/webm'
+
+      const recorder = new MediaRecorder(stream, { mimeType })
+      mediaRecorderRef.current = recorder
+
+      recorder.onstart = () => {
+        // First video frame is captured now — record how far behind audio we are
+        videoOffsetMsRef.current = audioStartTsRef.current != null
+          ? Math.max(0, Date.now() - audioStartTsRef.current)
+          : 0
+      }
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size === 0) return
+        chunkQueueRef.current = chunkQueueRef.current.then(async () => {
+          const buffer = await event.data.arrayBuffer()
+          await window.api.recording.saveVideoChunk({
+            recordingId,
+            chunk: new Uint8Array(buffer)
+          })
+        }).catch((e) => console.error('[Video] chunk send failed:', e))
+      }
+
+      // Collect chunks every 5 seconds so memory usage stays bounded
+      recorder.start(5000)
+    } catch (e) {
+      console.error('[LiveRecordingModal] Failed to start video capture:', e)
+      setVideoError(e instanceof Error ? e.message : String(e))
+    }
+  }, [videoMode, selectedSourceId, pipCam])
+
+  const stopVideoCapture = useCallback(async (recordingId: string): Promise<void> => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder || recorder.state === 'inactive') return
+
+    await new Promise<void>((resolve) => {
+      recorder.onstop = async () => {
+        // Wait for all in-flight chunk writes to finish
+        await chunkQueueRef.current
+        // Tear down the PIP compositor, then stop all streams (composite +
+        // underlying screen/camera devices)
+        compositeCleanupRef.current?.()
+        compositeCleanupRef.current = null
+        videoStreamRef.current?.getTracks().forEach((t) => t.stop())
+        videoStreamRef.current = null
+        rawStreamsRef.current.forEach((s) => s.getTracks().forEach((t) => t.stop()))
+        rawStreamsRef.current = []
+        setPreviewStream(null)
+        // Finalise the file in main process and update DB
+        await window.api.recording.videoComplete({
+          recordingId,
+          offsetMs: videoOffsetMsRef.current
+        })
+        resolve()
+      }
+      recorder.stop()
+    })
+
+    mediaRecorderRef.current = null
+  }, [])
+
   const handleStart = async () => {
     setStartError(null)
+    setVideoError(null)
     setStarting(true)
     const label = title.trim() || `Recording ${new Date().toLocaleString()}`
     try {
@@ -95,7 +373,17 @@ export default function LiveRecordingModal({ onClose }: Props) {
         channels: 1,
         inputDeviceId: selectedInputDeviceId,
         systemAudioEnabled: systemAudio
-      }, selectedSpeakerIds.length > 0 ? selectedSpeakerIds : undefined)
+      }, selectedSpeakerIds.length > 0 ? selectedSpeakerIds : undefined, videoMode)
+
+      // Audio timeline origin: stamped in the main process at audio.start()
+      // (falls back to now if unavailable).
+      audioStartTsRef.current = useRecordingStore.getState().audioStartedAt ?? Date.now()
+
+      // activeRecordingId is set synchronously in the store by startRecording
+      const recordingId = useRecordingStore.getState().activeRecordingId
+      if (recordingId && videoMode !== 'none') {
+        await startVideoCapture(recordingId)
+      }
     } catch (e) {
       setStartError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -104,10 +392,22 @@ export default function LiveRecordingModal({ onClose }: Props) {
   }
 
   const handleStop = async () => {
-    const id = activeRecordingId // capture before stopRecording clears it
+    const id = activeRecordingId // capture before store clears it
     setStopping(true)
     try {
-      await stopRecording()
+      // Run audio and video stop concurrently
+      const audioStop = stopRecording()
+      const videoStop = id && videoMode !== 'none'
+        ? stopVideoCapture(id)
+        : Promise.resolve()
+
+      await Promise.all([audioStop, videoStop])
+
+      // If video was recorded, refresh the recording in the store to get videoPath
+      if (id && videoMode !== 'none') {
+        const { recording: updated } = await window.api.recording.get({ recordingId: id })
+        if (updated) useRecordingStore.getState().updateRecording(updated)
+      }
     } finally {
       setStopping(false)
     }
@@ -144,7 +444,6 @@ export default function LiveRecordingModal({ onClose }: Props) {
     profileId
   }: { speakerName: string; profileId?: string }) => {
     if (!assignTarget || !activeRecordingId) {
-      console.warn('[LiveRecordingModal] handleAssignSave called without assignTarget or activeRecordingId')
       setAssignTarget(null)
       return
     }
@@ -156,12 +455,10 @@ export default function LiveRecordingModal({ onClose }: Props) {
         speakerName,
         profileId
       })
-      // Optimistically update the segment in the live list
       updateLiveSegment(assignTarget.id, {
         speakerName,
         speakerId: profileId ?? null
       })
-      // Keep transcript store in sync too
       useTranscriptStore.getState().updateSegment({
         ...assignTarget,
         speakerName,
@@ -174,17 +471,65 @@ export default function LiveRecordingModal({ onClose }: Props) {
     }
   }, [assignTarget, activeRecordingId, updateLiveSegment])
 
+  const videoModeLabel: Record<VideoMode, string> = {
+    none: 'Audio only',
+    screen: 'Screen',
+    webcam: 'Webcam journal',
+  }
+
+  // ── PIP bubble dragging on the live preview ──────────────────────────────
+  // The preview shows the composited canvas stream, so pointer coordinates
+  // map linearly onto canvas pixels (the <video> keeps its intrinsic aspect).
+  const previewPointToCanvas = (e: React.PointerEvent<HTMLVideoElement>) => {
+    const el = e.currentTarget
+    const rect = el.getBoundingClientRect()
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * (el.videoWidth || 1),
+      y: ((e.clientY - rect.top) / rect.height) * (el.videoHeight || 1)
+    }
+  }
+
+  const handlePreviewPointerDown = (e: React.PointerEvent<HTMLVideoElement>) => {
+    const pip = pipRectRef.current
+    if (!pip) return
+    const p = previewPointToCanvas(e)
+    if (p.x >= pip.x && p.x <= pip.x + pip.w && p.y >= pip.y && p.y <= pip.y + pip.h) {
+      pipDragRef.current = { dx: p.x - pip.x, dy: p.y - pip.y }
+      e.currentTarget.setPointerCapture(e.pointerId)
+      e.preventDefault()
+    }
+  }
+
+  const handlePreviewPointerMove = (e: React.PointerEvent<HTMLVideoElement>) => {
+    const drag = pipDragRef.current
+    const pip = pipRectRef.current
+    const el = e.currentTarget
+    if (!drag || !pip || !el.videoWidth || !el.videoHeight) return
+    const p = previewPointToCanvas(e)
+    const margin = el.videoWidth * PIP_MARGIN_FRACTION
+    const availW = Math.max(1, el.videoWidth - pip.w - 2 * margin)
+    const availH = Math.max(1, el.videoHeight - pip.h - 2 * margin)
+    pipPosRef.current = {
+      x: Math.min(1, Math.max(0, (p.x - drag.dx - margin) / availW)),
+      y: Math.min(1, Math.max(0, (p.y - drag.dy - margin) / availH))
+    }
+  }
+
+  const handlePreviewPointerUp = (e: React.PointerEvent<HTMLVideoElement>) => {
+    pipDragRef.current = null
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* not captured */ }
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={(e) => {
-        // Only close via X or Stop — not by clicking backdrop during recording
         if (!isRecording && e.target === e.currentTarget) onClose()
       }}
     >
       <div
         className={`bg-surface-800 border border-surface-600 rounded-2xl shadow-2xl flex flex-col transition-all duration-200 ${
-          isRecording ? 'w-[52rem] max-h-[80vh]' : 'w-[32rem] max-h-[80vh]'
+          isRecording ? 'w-[52rem] max-h-[80vh]' : 'w-[36rem] max-h-[90vh]'
         }`}
       >
         {/* ── Header ────────────────────────────────────────────────────── */}
@@ -286,6 +631,105 @@ export default function LiveRecordingModal({ onClose }: Props) {
               </label>
             </div>
 
+            {/* ── Video mode picker ──────────────────────────────────────── */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Video className="w-3.5 h-3.5 text-zinc-400" />
+                <span className="text-sm text-zinc-300">Video</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {(['none', 'screen', 'webcam'] as VideoMode[]).map((mode) => {
+                  const Icon = mode === 'none' ? Mic : mode === 'screen' ? Layers : Camera
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setVideoMode(mode)}
+                      className={`flex flex-col items-center gap-1.5 py-3 px-2 rounded-lg border text-xs font-medium transition-colors ${
+                        videoMode === mode
+                          ? 'border-accent/60 bg-accent/10 text-accent'
+                          : 'border-surface-600 bg-surface-700/40 text-zinc-400 hover:border-surface-500 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" />
+                      {videoModeLabel[mode]}
+                    </button>
+                  )
+                })}
+              </div>
+
+              {/* Webcam note */}
+              {videoMode === 'webcam' && (
+                <p className="text-xs text-zinc-500 leading-snug">
+                  Records your camera in portrait orientation — ideal for video journal entries. The video is muted during playback; audio comes from your microphone recording.
+                </p>
+              )}
+
+              {/* Screen source picker */}
+              {videoMode === 'screen' && (
+                <div className="space-y-2">
+                  {fetchingSources && (
+                    <div className="flex items-center gap-2 py-2 text-xs text-zinc-500">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Loading sources…
+                    </div>
+                  )}
+                  {videoError && (
+                    <p className="text-xs text-red-400 leading-snug">{videoError}</p>
+                  )}
+                  <label className="flex items-center gap-2 cursor-pointer select-none group">
+                    <input
+                      type="checkbox"
+                      className="rounded border-surface-500 bg-surface-700 text-accent focus:ring-accent/50"
+                      checked={pipCam}
+                      onChange={(e) => setPipCam(e.target.checked)}
+                    />
+                    <Camera className="w-3.5 h-3.5 text-zinc-400 group-hover:text-zinc-200 transition-colors" />
+                    <span className="text-sm text-zinc-400 group-hover:text-zinc-200 transition-colors">
+                      Show me in the corner
+                    </span>
+                    <span className="text-xs text-zinc-600">(webcam bubble — drag it in the preview while recording)</span>
+                  </label>
+                  {!fetchingSources && screenSources.length > 0 && (
+                    <div className="grid grid-cols-3 gap-2 max-h-48 overflow-y-auto pr-1">
+                      {screenSources.map((source) => (
+                        <button
+                          key={source.id}
+                          type="button"
+                          onClick={() => setSelectedSourceId(source.id)}
+                          className={`relative flex flex-col gap-1 rounded-lg border overflow-hidden text-left transition-colors ${
+                            selectedSourceId === source.id
+                              ? 'border-accent/70 ring-1 ring-accent/40'
+                              : 'border-surface-600 hover:border-surface-400'
+                          }`}
+                        >
+                          {source.thumbnailDataUrl ? (
+                            <img
+                              src={source.thumbnailDataUrl}
+                              alt={source.name}
+                              className="w-full aspect-video object-cover bg-surface-700"
+                            />
+                          ) : (
+                            <div className="w-full aspect-video bg-surface-700 flex items-center justify-center">
+                              <Layers className="w-5 h-5 text-zinc-600" />
+                            </div>
+                          )}
+                          <span className="px-1.5 pb-1.5 text-[10px] text-zinc-300 leading-tight truncate">
+                            {source.name}
+                          </span>
+                          {selectedSourceId === source.id && (
+                            <div className="absolute top-1 right-1 w-4 h-4 bg-accent rounded-full flex items-center justify-center">
+                              <Check className="w-2.5 h-2.5 text-white" />
+                            </div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* ── Expected speakers ──────────────────────────────────────── */}
             <div className="space-y-2">
               <div className="flex items-center gap-2">
@@ -294,7 +738,6 @@ export default function LiveRecordingModal({ onClose }: Props) {
                 <span className="text-xs text-zinc-600">(optional — improves speaker identification)</span>
               </div>
 
-              {/* Selected speakers */}
               {selectedSpeakerIds.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {selectedSpeakerIds.map((id) => {
@@ -316,7 +759,6 @@ export default function LiveRecordingModal({ onClose }: Props) {
                 </div>
               )}
 
-              {/* Add existing speaker dropdown */}
               {allSpeakers.filter((s) => !selectedSpeakerIds.includes(s.id)).length > 0 && (
                 <select
                   className="input w-full text-sm"
@@ -336,7 +778,6 @@ export default function LiveRecordingModal({ onClose }: Props) {
                 </select>
               )}
 
-              {/* Create new speaker inline */}
               <div className="flex gap-2">
                 <input
                   className="input flex-1 text-sm"
@@ -373,8 +814,14 @@ export default function LiveRecordingModal({ onClose }: Props) {
               <button
                 className="btn-primary"
                 onClick={() => void handleStart()}
-                disabled={starting || isAnyProcessing}
-                title={isAnyProcessing ? 'A recording is being processed — please wait' : undefined}
+                disabled={starting || isAnyProcessing || (videoMode === 'screen' && !selectedSourceId)}
+                title={
+                  isAnyProcessing
+                    ? 'A recording is being processed — please wait'
+                    : videoMode === 'screen' && !selectedSourceId
+                    ? 'Select a screen source above'
+                    : undefined
+                }
               >
                 <Mic className="w-4 h-4" />
                 {starting ? 'Starting…' : isAnyProcessing ? 'Processing…' : 'Start Recording'}
@@ -394,8 +841,9 @@ export default function LiveRecordingModal({ onClose }: Props) {
           </div>
         )}
 
-        {/* ── Live transcript (during recording) ────────────────────────── */}
+        {/* ── Live transcript + video self-view (during recording) ──────── */}
         {isRecording && (
+          <div className="flex-1 flex min-h-0">
           <div className="flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-0.5">
             {liveSegments.length === 0 ? (
               <div className="flex items-center justify-center py-16 text-zinc-600 text-sm">
@@ -409,12 +857,9 @@ export default function LiveRecordingModal({ onClose }: Props) {
                     key={seg.id}
                     className="flex gap-3 py-1.5 px-2 rounded-lg hover:bg-surface-700/40 transition-colors group"
                   >
-                    {/* Timestamp */}
                     <span className="text-xs text-zinc-600 pt-0.5 w-12 shrink-0 font-mono tabular-nums">
                       {formatTimestamp(seg.timestampStart)}
                     </span>
-
-                    {/* Speaker chip */}
                     <div className="w-24 shrink-0">
                       <button
                         onClick={() => setAssignTarget(seg)}
@@ -438,8 +883,6 @@ export default function LiveRecordingModal({ onClose }: Props) {
                         )}
                       </button>
                     </div>
-
-                    {/* Transcript text */}
                     <p className="flex-1 text-sm text-zinc-200 leading-snug pt-0.5">
                       {seg.text}
                     </p>
@@ -449,9 +892,36 @@ export default function LiveRecordingModal({ onClose }: Props) {
             )}
             <div ref={bottomRef} />
           </div>
+
+          {/* Live self-view preview (webcam mirrored; screen shown as-is).
+              In PIP mode the preview is the composited canvas — dragging the
+              bubble here moves it in the actual recording. */}
+          {previewStream && (
+            <div className="shrink-0 p-3 border-l border-surface-700 flex flex-col items-center gap-1.5">
+              <video
+                ref={previewVideoRef}
+                muted
+                playsInline
+                onPointerDown={handlePreviewPointerDown}
+                onPointerMove={handlePreviewPointerMove}
+                onPointerUp={handlePreviewPointerUp}
+                style={{ touchAction: 'none' }}
+                className={`rounded-lg bg-black border border-surface-600 ${
+                  videoMode === 'webcam'
+                    ? 'h-72 aspect-[9/16] object-cover scale-x-[-1]'
+                    : `w-72 ${pipCam ? 'cursor-move' : ''}`
+                }`}
+              />
+              {videoMode === 'screen' && pipCam && (
+                <p className="text-[10px] text-zinc-600 text-center leading-tight">
+                  Drag your bubble to reposition it
+                </p>
+              )}
+            </div>
+          )}
+          </div>
         )}
 
-        {/* Hint text during recording */}
         {isRecording && liveSegments.length > 0 && (
           <p className="px-5 py-2 text-xs text-zinc-600 border-t border-surface-700 shrink-0">
             Click a speaker chip to assign — recording continues uninterrupted.
@@ -459,7 +929,6 @@ export default function LiveRecordingModal({ onClose }: Props) {
         )}
       </div>
 
-      {/* ── Nested speaker assignment modal ─────────────────────────────── */}
       {assignTarget && (
         <SpeakerLabelModal
           segment={assignTarget}

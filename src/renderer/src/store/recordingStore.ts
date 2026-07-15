@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Recording, TranscriptSegment, AudioCaptureConfig } from '@shared/types'
+import type { Recording, TranscriptSegment, AudioCaptureConfig, VideoMode } from '@shared/types'
 
 interface RecordingState {
   // Active recording
@@ -8,6 +8,8 @@ interface RecordingState {
   isPaused: boolean
   audioLevel: number
   liveSegments: TranscriptSegment[]
+  /** Main-process Date.now() at the moment audio capture began (A/V sync origin) */
+  audioStartedAt: number | null
 
   // Recording list
   recordings: Recording[]
@@ -34,7 +36,7 @@ interface RecordingState {
   postProcessingRecordingId: string | null
 
   // Async thunks
-  startRecording: (title: string, config: AudioCaptureConfig, expectedSpeakerIds?: string[]) => Promise<void>
+  startRecording: (title: string, config: AudioCaptureConfig, expectedSpeakerIds?: string[], videoMode?: VideoMode) => Promise<void>
   stopRecording: () => Promise<void>
   pauseRecording: () => Promise<void>
   resumeRecording: () => Promise<void>
@@ -47,6 +49,7 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
   isPaused: false,
   audioLevel: 0,
   liveSegments: [],
+  audioStartedAt: null,
   recordings: [],
   loadingRecordings: false,
   diarizationError: null,
@@ -76,16 +79,16 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     set((s) => ({ recordings: s.recordings.filter((r) => r.id !== id) })),
   setDiarizationError: (msg) => set({ diarizationError: msg }),
 
-  startRecording: async (title, config, expectedSpeakerIds) => {
+  startRecording: async (title, config, expectedSpeakerIds, videoMode) => {
     let result: Awaited<ReturnType<typeof window.api.recording.start>>
     try {
-      result = await window.api.recording.start({ title, config, expectedSpeakerIds })
+      result = await window.api.recording.start({ title, config, expectedSpeakerIds, videoMode })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       console.error('[Recording] Failed to start:', msg)
       throw new Error(msg)
     }
-    set({ activeRecordingId: result.recordingId, isRecording: true })
+    set({ activeRecordingId: result.recordingId, isRecording: true, audioStartedAt: result.audioStartedAt ?? Date.now() })
     get().clearLiveSegments()
     get().setDiarizationError(null)
   },

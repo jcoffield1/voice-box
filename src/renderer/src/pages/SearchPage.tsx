@@ -30,6 +30,7 @@ export default function SearchPage() {
   // '__default__' = filter by recordings with no template assigned (using default)
   const [templateFilter, setTemplateFilter] = useState<string>('')
   const [tagFilter, setTagFilter] = useState<string>('')
+  const [includeJournals, setIncludeJournals] = useState(false)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [history, setHistory] = useState<string[]>(loadHistory)
@@ -54,22 +55,24 @@ export default function SearchPage() {
         speakerName: speakerFilter || undefined,
         ...(templateFilter === '' ? {} : { templateId: templateFilter }),
         ...(tagFilter ? { tags: [tagFilter] } : {}),
+        ...(includeJournals ? { includeJournals: true } : {}),
         dateFrom: dateFrom ? new Date(dateFrom).getTime() : undefined,
         dateTo: dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : undefined
       })
     },
-    [input, speakerFilter, templateFilter, tagFilter, dateFrom, dateTo, submit]
+    [input, speakerFilter, templateFilter, tagFilter, includeJournals, dateFrom, dateTo, submit]
   )
 
   const clearFilters = () => {
     setSpeakerFilter('')
     setTemplateFilter('')
     setTagFilter('')
+    setIncludeJournals(false)
     setDateFrom('')
     setDateTo('')
   }
 
-  const hasFilters = speakerFilter || templateFilter || tagFilter || dateFrom || dateTo
+  const hasFilters = speakerFilter || templateFilter || tagFilter || includeJournals || dateFrom || dateTo
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -215,6 +218,17 @@ export default function SearchPage() {
                 />
               </div>
             </div>
+            <label className="flex items-center gap-2 cursor-pointer select-none group pt-1">
+              <input
+                type="checkbox"
+                className="rounded border-surface-500 bg-surface-700 text-accent focus:ring-accent/50"
+                checked={includeJournals}
+                onChange={(e) => setIncludeJournals(e.target.checked)}
+              />
+              <span className="text-sm text-zinc-400 group-hover:text-zinc-200 transition-colors">
+                Include Webcam Journal
+              </span>
+            </label>
           </div>
         )}
       </form>

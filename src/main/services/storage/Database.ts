@@ -447,6 +447,32 @@ Be thorough — this is the complete record of the conversation.',
     up: `
       ALTER TABLE transcript_segments ADD COLUMN diarization_speaker_id TEXT;
     `
+  },
+  {
+    version: 20,
+    name: 'add_video_path_to_recordings',
+    up: `
+      ALTER TABLE recordings ADD COLUMN video_path TEXT;
+    `
+  },
+  {
+    version: 21,
+    name: 'add_video_offset_to_recordings',
+    up: `
+      -- Milliseconds between audio capture start and video capture start.
+      -- Video starts later (camera/screen warm-up); playback shifts the video
+      -- timeline by this amount to keep the two streams in sync.
+      ALTER TABLE recordings ADD COLUMN video_offset_ms INTEGER;
+    `
+  },
+  {
+    version: 22,
+    name: 'add_video_mode_to_recordings',
+    up: `
+      -- 'screen' | 'webcam' | NULL (audio only). Webcam journal entries are
+      -- excluded from global search and cross-recording AI chat by default.
+      ALTER TABLE recordings ADD COLUMN video_mode TEXT;
+    `
   }
 ]
 

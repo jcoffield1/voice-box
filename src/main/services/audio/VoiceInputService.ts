@@ -25,7 +25,7 @@ export class VoiceInputService extends EventEmitter {
   private channels = 1
   private captureService: AudioCaptureService
   private whisper: WhisperService
-  private stopCapture: (() => void) | null = null
+  private stopCapture: (() => Promise<void>) | null = null
 
   constructor(whisper: WhisperService) {
     super()
@@ -57,9 +57,11 @@ export class VoiceInputService extends EventEmitter {
       channels: this.channels
     })
 
-    this.stopCapture = () => {
+    this.stopCapture = async () => {
+      // Flush PortAudio's final partial buffer BEFORE detaching the listener —
+      // it holds the tail of the user's last word.
+      await this.captureService.stop(600)
       this.captureService.off('chunk', onChunk)
-      this.captureService.stop()
     }
   }
 
@@ -68,7 +70,7 @@ export class VoiceInputService extends EventEmitter {
     this.isCapturing = false
 
     if (this.stopCapture) {
-      this.stopCapture()
+      await this.stopCapture()
       this.stopCapture = null
     }
 

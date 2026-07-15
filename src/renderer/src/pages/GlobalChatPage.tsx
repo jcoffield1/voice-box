@@ -44,6 +44,7 @@ export default function GlobalChatPage() {
   // '' = no filter, else explicit templateId; [] = no tag filter
   const [templateFilter, setTemplateFilter] = useState<string>('')
   const [tagFilter, setTagFilter] = useState<string[]>([])
+  const [includeJournals, setIncludeJournals] = useState(false)
   const providerMap = useSettingsStore((s) => s.providerMap)
   const provider = providerMap['conversation'] ?? 'ollama'
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -149,8 +150,8 @@ export default function GlobalChatPage() {
       ? templates.find(tmpl => tmpl.id === templateFilter)?.name
       : undefined
     const resolvedTags = tagFilter.length > 0 ? tagFilter : undefined
-    await store.sendMessage(tid, t, null, '', provider, resolvedTemplateId, resolvedTemplateName, resolvedTags)
-  }, [input, ensureThread, store, provider, templateFilter, templates, tagFilter])
+    await store.sendMessage(tid, t, null, '', provider, resolvedTemplateId, resolvedTemplateName, resolvedTags, includeJournals)
+  }, [input, ensureThread, store, provider, templateFilter, templates, tagFilter, includeJournals])
 
   const handleVoiceDown = useCallback(async () => {
     if (voiceActive) return
@@ -321,6 +322,21 @@ export default function GlobalChatPage() {
                   </select>
                 </div>
               )}
+              {/* Webcam journal scope — journals are excluded from AI context by default */}
+              <label
+                className="flex items-center gap-1.5 cursor-pointer select-none group"
+                title="Include webcam journal recordings in the AI's context"
+              >
+                <input
+                  type="checkbox"
+                  className="rounded border-surface-500 bg-surface-700 text-accent focus:ring-accent/50"
+                  checked={includeJournals}
+                  onChange={(e) => setIncludeJournals(e.target.checked)}
+                />
+                <span className="text-xs text-zinc-400 group-hover:text-zinc-200 transition-colors whitespace-nowrap">
+                  Include Webcam Journal
+                </span>
+              </label>
               <button
                 className="btn-ghost py-1.5 px-2.5 text-xs"
                 onClick={() => void handleNewChat()}

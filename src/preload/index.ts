@@ -85,6 +85,11 @@ import type {
   UpdateSpeakerNotesArgs,
   ResetVoiceArgs,
   RecordingDebriefReadyPayload,
+  GetScreenSourcesResult,
+  SaveVideoChunkArgs,
+  VideoCompleteArgs,
+  DeleteVideoArgs,
+  DeleteVideoResult,
   GetTemplatesResult,
   GetTemplateArgs,
   GetTemplateResult,
@@ -154,7 +159,15 @@ const api = {
     onDebriefReady: (cb: (payload: RecordingDebriefReadyPayload) => void) =>
       on(IPC.recording.debriefReady, cb as (...args: unknown[]) => void),
     onProcessed: (cb: (payload: { recordingId: string }) => void) =>
-      on(IPC.recording.processed, cb as (...args: unknown[]) => void)
+      on(IPC.recording.processed, cb as (...args: unknown[]) => void),
+    getScreenSources: () =>
+      invoke<GetScreenSourcesResult>(IPC.recording.getScreenSources),
+    saveVideoChunk: (args: SaveVideoChunkArgs) =>
+      invoke<void>(IPC.recording.saveVideoChunk, args),
+    videoComplete: (args: VideoCompleteArgs) =>
+      invoke<void>(IPC.recording.videoComplete, args),
+    deleteVideo: (args: DeleteVideoArgs) =>
+      invoke<DeleteVideoResult>(IPC.recording.deleteVideo, args)
   },
 
   // ─── Transcript ───────────────────────────────────────────────────────────

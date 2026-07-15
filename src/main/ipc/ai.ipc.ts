@@ -53,7 +53,8 @@ async function buildRagContext(
   recordingRepo: RecordingRepository,
   templateId?: string | null,
   templateName?: string,
-  tags?: string[]
+  tags?: string[],
+  includeJournals?: boolean
 ): Promise<string> {
   try {
     // When filtering, over-fetch to compensate for post-filter result attrition.
@@ -62,6 +63,7 @@ async function buildRagContext(
     const searchQuery: Parameters<typeof search.query>[0] = { query, limit }
     if (templateId !== undefined) searchQuery.templateId = templateId
     if (tags && tags.length > 0) searchQuery.tags = tags
+    if (includeJournals) searchQuery.includeJournals = true
     const rawResults = await search.query(searchQuery)
     const results = isFiltered ? rawResults.slice(0, RAG_CONTEXT_RESULTS) : rawResults
     if (results.length === 0) return ''
@@ -117,6 +119,7 @@ async function buildRagContext(
       const allRecordings = recordingRepo.findAll()
       for (const rec of allRecordings) {
         if (includedIds.has(rec.id)) continue
+        if (!includeJournals && rec.videoMode === 'webcam') continue
         const titleHits = queryTerms.filter((t) => rec.title.toLowerCase().includes(t)).length
         // Require ≥2 matching terms, or all terms if query is only 1-2 words
         const threshold = Math.min(2, queryTerms.length)
@@ -270,7 +273,7 @@ ${transcriptContext}
 When referencing specific moments, include the speaker name and timestamp. Be concise and accurate.`
     } else {
       // Cross-recording mode: use RAG to inject relevant context from all recordings
-      const ragContext = await buildRagContext(args.message, searchService, recordingRepo, args.templateId, args.templateName, args.tags)
+      const ragContext = await buildRagContext(args.message, searchService, recordingRepo, args.templateId, args.templateName, args.tags, args.includeJournals)
       const scopeParts: string[] = []
       if (args.templateName) scopeParts.push(`the "${args.templateName}" category`)
       if (args.tags && args.tags.length > 0) scopeParts.push(`recordings tagged "${args.tags.join('", "')}"`)

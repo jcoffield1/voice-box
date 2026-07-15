@@ -30,9 +30,11 @@ def _patch_compat():
         message=r'std\(\): degrees of freedom is <= 0',
         category=UserWarning,
     )
+    # The torchcodec warning begins with a newline, and filterwarnings anchors
+    # its regex at the start of the message — hence the (?s).* prefix.
     warnings.filterwarnings(
         'ignore',
-        message=r'torchcodec is not installed',
+        message=r'(?s).*torchcodec is not installed',
         category=UserWarning,
     )
 
@@ -103,7 +105,11 @@ def diarize(payload: dict) -> dict:
     if num_speakers:
         kwargs["num_speakers"] = num_speakers
 
-    diarization = pipeline(audio_input, **kwargs)
+    result = pipeline(audio_input, **kwargs)
+
+    # pyannote 4.x returns a DiarizeOutput dataclass; the Annotation lives at
+    # .speaker_diarization. pyannote 3.x returned the Annotation directly.
+    diarization = getattr(result, "speaker_diarization", result)
 
     segments = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):

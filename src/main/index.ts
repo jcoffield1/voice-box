@@ -96,7 +96,12 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Screen recording composites the webcam PIP onto a canvas via
+      // requestAnimationFrame in the renderer. Without this, Chromium
+      // throttles rAF to ~1 fps when the window is backgrounded — which is
+      // exactly when the user is off recording other apps.
+      backgroundThrottling: false
     }
   })
 
@@ -1049,7 +1054,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   globalShortcut.unregisterAll()
-  audio?.stop()
+  void audio?.stop()
   tts?.stop()
   pythonBridge?.killAll()
   queue?.destroy()

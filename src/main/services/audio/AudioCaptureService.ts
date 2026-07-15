@@ -142,8 +142,22 @@ export class AudioCaptureService extends EventEmitter {
     }
   }
 
-  stop(): void {
+  /**
+   * Stop capture.
+   *
+   * PortAudio delivers audio only in full framesPerBuffer chunks (~0.5 s at
+   * 16 kHz mono). When the user hits Stop, the tail of their speech is sitting
+   * in a partially-filled buffer that quit() silently discards ("Finishing
+   * input - N bytes not available to fill the last buffer"), cutting off the
+   * last word. Pass flushMs > 0 to keep capturing briefly so ongoing input
+   * (even silence) pushes that final buffer out before teardown.
+   */
+  async stop(flushMs = 0): Promise<void> {
     if (this.state === 'idle') return
+
+    if (flushMs > 0 && this.inputStream && this.state === 'recording') {
+      await new Promise((resolve) => setTimeout(resolve, flushMs))
+    }
 
     if (this.levelInterval) {
       clearInterval(this.levelInterval)

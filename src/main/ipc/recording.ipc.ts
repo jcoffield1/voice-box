@@ -1,6 +1,7 @@
-import { ipcMain, app, systemPreferences, shell, dialog, BrowserWindow } from 'electron'
+import { ipcMain, app, systemPreferences, shell, dialog, BrowserWindow, desktopCapturer } from 'electron'
 import { join, basename, extname } from 'path'
-import { promises as fs, copyFileSync } from 'fs'
+import { promises as fs, copyFileSync, createWriteStream } from 'fs'
+import type { WriteStream } from 'fs'
 import { marked } from 'marked'
 import {
   Document, Paragraph, TextRun, HeadingLevel, Packer, BorderStyle
@@ -30,7 +31,12 @@ import type {
   ExportTranscriptResult,
   ExportSummaryArgs,
   ExportSummaryResult,
-  ReprocessRecordingArgs
+  ReprocessRecordingArgs,
+  GetScreenSourcesResult,
+  SaveVideoChunkArgs,
+  VideoCompleteArgs,
+  DeleteVideoArgs,
+  DeleteVideoResult
 } from '@shared/ipc-types'
 import type { RecordingRepository } from '../services/storage/repositories/RecordingRepository'
 import type { TranscriptRepository } from '../services/storage/repositories/TranscriptRepository'
@@ -80,7 +86,7 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
       }
     }
 
-    const recording = recordingRepo.create(args.title)
+    const recording = recordingRepo.create(args.title, args.videoMode)
 
     // Store expected speakers if provided (constrains speaker matching)
     if (args.expectedSpeakerIds && args.expectedSpeakerIds.length > 0) {
@@ -95,6 +101,7 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     whisper.setVocabHints(args.title, speakerNames)
 
     audio.start(args.config)
+    const audioStartedAt = Date.now()
 
     // If audio failed to start (e.g. device unavailable), clean up and surface the error.
     if (audio.getState() === 'error') {
@@ -104,11 +111,16 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
 
     queue.start(recording.id)
 
-    return { recordingId: recording.id }
+    return { recordingId: recording.id, audioStartedAt }
   })
 
   ipcMain.handle(IPC.recording.stop, async (_event, args: StopRecordingArgs): Promise<StopRecordingResult> => {
-    audio.stop()
+    // Duration reflects when the user clicked Stop, not when the flush finished
+    const stoppedAt = Date.now()
+
+    // Flush PortAudio's final partial buffer (holds the last ~0.5 s of speech)
+    // before teardown, then stop.
+    await audio.stop(600)
 
     // Persist audioPath to the DB BEFORE calling queue.stop(). queue.stop() emits
     // 'complete' synchronously, and the handler in index.ts reads recording.audioPath
@@ -117,7 +129,7 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
     const audioPath = join(app.getPath('userData'), 'recordings', `${args.recordingId}.wav`)
     audio.saveAudio(audioPath)
 
-    const durationSeconds = Math.round((Date.now() - (recordingRepo.findById(args.recordingId)?.createdAt ?? Date.now())) / 1000)
+    const durationSeconds = Math.round((stoppedAt - (recordingRepo.findById(args.recordingId)?.createdAt ?? stoppedAt)) / 1000)
     const recording = recordingRepo.update(args.recordingId, {
       status: 'complete',
       duration: durationSeconds,
@@ -254,7 +266,17 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
   })
 
   ipcMain.handle(IPC.recording.delete, async (_event, args: DeleteRecordingArgs): Promise<void> => {
+    const recording = recordingRepo.findById(args.recordingId)
     recordingRepo.delete(args.recordingId)
+    // Remove media files from disk too — otherwise they linger as orphans
+    for (const path of [recording?.audioPath, recording?.videoPath]) {
+      if (!path) continue
+      try {
+        await fs.unlink(path)
+      } catch {
+        // Already gone
+      }
+    }
   })
 
   // ─── Import Audio File ────────────────────────────────────────────────────
@@ -562,6 +584,75 @@ export function registerRecordingIpc(deps: RecordingIpcDeps): void {
 
     shell.showItemInFolder(filePath)
     return { savedTo: filePath }
+  })
+
+  // ─── Video Recording ──────────────────────────────────────────────────────
+  // Video files are muted WebM streams recorded in the renderer and streamed
+  // here in chunks. Audio is handled separately by the existing audio pipeline.
+
+  const videoStreams = new Map<string, WriteStream>()
+
+  ipcMain.handle(IPC.recording.getScreenSources, async (): Promise<GetScreenSourcesResult> => {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 320, height: 180 }
+    })
+    return {
+      sources: sources.map((s) => ({
+        id: s.id,
+        name: s.name,
+        thumbnailDataUrl: s.thumbnail.toDataURL(),
+        isScreen: s.id.startsWith('screen:')
+      }))
+    }
+  })
+
+  ipcMain.handle(IPC.recording.saveVideoChunk, async (_event, args: SaveVideoChunkArgs): Promise<void> => {
+    const { recordingId, chunk } = args
+
+    if (!videoStreams.has(recordingId)) {
+      const recordingsDir = join(app.getPath('userData'), 'recordings')
+      await fs.mkdir(recordingsDir, { recursive: true })
+      const videoPath = join(recordingsDir, `${recordingId}.webm`)
+      videoStreams.set(recordingId, createWriteStream(videoPath))
+    }
+
+    const stream = videoStreams.get(recordingId)!
+    await new Promise<void>((resolve, reject) => {
+      stream.write(Buffer.from(chunk), (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
+    })
+  })
+
+  ipcMain.handle(IPC.recording.videoComplete, async (_event, args: VideoCompleteArgs): Promise<void> => {
+    const { recordingId, offsetMs } = args
+    const stream = videoStreams.get(recordingId)
+    if (stream) {
+      await new Promise<void>((resolve) => stream.end(resolve))
+      videoStreams.delete(recordingId)
+    }
+    const videoPath = join(app.getPath('userData'), 'recordings', `${recordingId}.webm`)
+    try {
+      await fs.access(videoPath)
+      recordingRepo.setVideoPath(recordingId, videoPath, offsetMs)
+      console.log(`[Video] Saved video for recording ${recordingId}: ${videoPath} (offset ${offsetMs ?? 0}ms)`)
+    } catch {
+      // No chunks were received — no file to record
+    }
+  })
+
+  ipcMain.handle(IPC.recording.deleteVideo, async (_event, args: DeleteVideoArgs): Promise<DeleteVideoResult> => {
+    const recording = recordingRepo.findById(args.recordingId)
+    if (!recording?.videoPath) return { deleted: false }
+    try {
+      await fs.unlink(recording.videoPath)
+    } catch {
+      // File already gone — still clear the DB reference
+    }
+    recordingRepo.clearVideoPath(args.recordingId)
+    return { deleted: true }
   })
 }
 

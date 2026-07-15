@@ -2,6 +2,9 @@
 
 export type RecordingStatus = 'recording' | 'processing' | 'complete' | 'error'
 
+/** Video capture mode for a recording. 'screen' = screen/window capture, 'webcam' = front camera. */
+export type VideoMode = 'none' | 'screen' | 'webcam'
+
 export interface Recording {
   id: string
   title: string
@@ -9,6 +12,14 @@ export interface Recording {
   updatedAt: number
   duration: number | null
   audioPath: string | null
+  videoPath: string | null
+  /** Milliseconds between audio start and video start (video starts later).
+   *  Playback shifts the video timeline back by this amount for A/V sync. */
+  videoOffsetMs: number | null
+  /** How this recording was captured: 'screen', 'webcam' (journal), or null
+   *  for audio-only. Webcam journals are excluded from global search and
+   *  cross-recording AI chat unless explicitly included. */
+  videoMode: VideoMode | null
   status: RecordingStatus
   summary: string | null
   summaryModel: string | null
@@ -130,6 +141,7 @@ export interface SearchResult {
   templateId: string | null
   recordingNotes: string | null
   recordingTags: string[]
+  recordingVideoMode: VideoMode | null
   text: string
   speakerName: string | null
   timestampStart: number
@@ -147,6 +159,9 @@ export interface SearchQuery {
   templateId?: string | null
   /** Filter to recordings that have ALL of these tags (case-insensitive). */
   tags?: string[]
+  /** Include webcam journal recordings in results. Default false — journals
+   *  are private-feeling entries and stay out of global search unless asked. */
+  includeJournals?: boolean
   dateFrom?: number
   dateTo?: number
   limit?: number

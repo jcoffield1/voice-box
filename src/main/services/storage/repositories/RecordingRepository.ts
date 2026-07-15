@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto'
 import type Database from 'better-sqlite3'
-import type { Recording, RecordingStatus } from '@shared/types'
+import type { Recording, RecordingStatus, VideoMode } from '@shared/types'
 
 interface RecordingRow {
   id: string
@@ -9,6 +9,9 @@ interface RecordingRow {
   updated_at: number
   duration: number | null
   audio_path: string | null
+  video_path: string | null
+  video_offset_ms: number | null
+  video_mode: string | null
   status: string
   summary: string | null
   summary_model: string | null
@@ -28,6 +31,9 @@ function rowToRecording(row: RecordingRow): Recording {
     updatedAt: row.updated_at,
     duration: row.duration,
     audioPath: row.audio_path,
+    videoPath: row.video_path,
+    videoOffsetMs: row.video_offset_ms,
+    videoMode: (row.video_mode as VideoMode | null) ?? null,
     status: row.status as RecordingStatus,
     summary: row.summary,
     summaryModel: row.summary_model,
@@ -53,15 +59,17 @@ export class RecordingRepository {
     `)
   }
 
-  create(title: string): Recording {
+  create(title: string, videoMode?: VideoMode): Recording {
     const id = randomUUID()
     const now = Date.now()
+    // 'none' is stored as NULL — only 'screen' / 'webcam' are meaningful
+    const mode = videoMode && videoMode !== 'none' ? videoMode : null
     this.db
       .prepare(
-        `INSERT INTO recordings (id, title, created_at, updated_at, status, tags)
-         VALUES (?, ?, ?, ?, 'recording', '[]')`
+        `INSERT INTO recordings (id, title, created_at, updated_at, status, tags, video_mode)
+         VALUES (?, ?, ?, ?, 'recording', '[]', ?)`
       )
-      .run(id, title, now, now)
+      .run(id, title, now, now, mode)
     return this.findById(id)!
   }
 
@@ -81,7 +89,7 @@ export class RecordingRepository {
 
   update(
     id: string,
-    fields: Partial<Pick<Recording, 'title' | 'notes' | 'tags' | 'status' | 'duration' | 'audioPath' | 'summary' | 'summaryModel' | 'summaryAt' | 'debrief' | 'debriefAt' | 'templateId'>>
+    fields: Partial<Pick<Recording, 'title' | 'notes' | 'tags' | 'status' | 'duration' | 'audioPath' | 'videoPath' | 'summary' | 'summaryModel' | 'summaryAt' | 'debrief' | 'debriefAt' | 'templateId'>>
   ): Recording | null {
     const updates: string[] = []
     const values: unknown[] = []
@@ -92,6 +100,7 @@ export class RecordingRepository {
     if (fields.status !== undefined) { updates.push('status = ?'); values.push(fields.status) }
     if (fields.duration !== undefined) { updates.push('duration = ?'); values.push(fields.duration) }
     if (fields.audioPath !== undefined) { updates.push('audio_path = ?'); values.push(fields.audioPath) }
+    if ('videoPath' in fields) { updates.push('video_path = ?'); values.push(fields.videoPath ?? null) }
     if (fields.summary !== undefined) { updates.push('summary = ?'); values.push(fields.summary) }
     if (fields.summaryModel !== undefined) { updates.push('summary_model = ?'); values.push(fields.summaryModel) }
     if (fields.summaryAt !== undefined) { updates.push('summary_at = ?'); values.push(fields.summaryAt) }
@@ -111,6 +120,18 @@ export class RecordingRepository {
 
   delete(id: string): void {
     this.db.prepare(`DELETE FROM recordings WHERE id = ?`).run(id)
+  }
+
+  setVideoPath(id: string, videoPath: string, offsetMs?: number): void {
+    this.db
+      .prepare(`UPDATE recordings SET video_path = ?, video_offset_ms = ?, updated_at = ? WHERE id = ?`)
+      .run(videoPath, offsetMs ?? null, Date.now(), id)
+  }
+
+  clearVideoPath(id: string): void {
+    this.db
+      .prepare(`UPDATE recordings SET video_path = NULL, video_offset_ms = NULL, updated_at = ? WHERE id = ?`)
+      .run(Date.now(), id)
   }
 
   count(): number {
