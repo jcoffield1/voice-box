@@ -105,7 +105,7 @@ import type {
   TestTemplateArgs,
   TestTemplateResult
 } from '../shared/ipc-types'
-import type { TranscriptSegment } from '../shared/types'
+import type { TranscriptSegment, Recording } from '../shared/types'
 
 // Type-safe IPC invoke helper
 function invoke<TResult>(channel: string, args?: unknown): Promise<TResult> {
@@ -160,6 +160,8 @@ const api = {
       on(IPC.recording.debriefReady, cb as (...args: unknown[]) => void),
     onProcessed: (cb: (payload: { recordingId: string }) => void) =>
       on(IPC.recording.processed, cb as (...args: unknown[]) => void),
+    onUpdated: (cb: (payload: { recording: Recording }) => void) =>
+      on(IPC.recording.updated, cb as (...args: unknown[]) => void),
     getScreenSources: () =>
       invoke<GetScreenSourcesResult>(IPC.recording.getScreenSources),
     saveVideoChunk: (args: SaveVideoChunkArgs) =>

@@ -139,6 +139,12 @@ window.api.recording.onProcessed(({ recordingId }) => {
   }
 })
 
+// Background updates to a recording row (e.g. audio compression swapped
+// audioPath) — keep the store in sync so playback uses the new file.
+window.api.recording.onUpdated(({ recording }) => {
+  useRecordingStore.getState().updateRecording(recording)
+})
+
 // Listen for auto-debrief ready event pushed from main process
 window.api.recording.onDebriefReady(({ recordingId, debrief }) => {
   useRecordingStore.getState().updateRecording({

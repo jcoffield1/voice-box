@@ -11,6 +11,7 @@ import { SpeakerRepository } from './services/storage/repositories/SpeakerReposi
 import { ConversationRepository } from './services/storage/repositories/ConversationRepository'
 import { SettingsRepository } from './services/storage/repositories/SettingsRepository'
 import { AudioCaptureService } from './services/audio/AudioCaptureService'
+import { AudioCompressionService } from './services/audio/AudioCompressionService'
 import { TTSService } from './services/audio/TTSService'
 import { VoiceInputService } from './services/audio/VoiceInputService'
 import { WhisperService } from './services/transcription/WhisperService'
@@ -82,6 +83,7 @@ let whisper: WhisperService
 let queue: TranscriptionQueue
 let tts: TTSService
 let voiceInput: VoiceInputService
+let audioCompression: AudioCompressionService | null = null
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -217,6 +219,16 @@ function initServices(): void {
   voiceInput = new VoiceInputService(whisper)
 
   const speakerIdService = new SpeakerIdentificationService(pythonBridge, speakerRepo)
+
+  // Background WAV → AAC compression. Never deletes a WAV until the encoded
+  // replacement is verified and the DB row points at it.
+  audioCompression = new AudioCompressionService(recordingRepo, (recordingId) => {
+    const updated = recordingRepo.findById(recordingId)
+    if (updated) mainWindow?.webContents.send(IPC.recording.updated, { recording: updated })
+  })
+  // Sweep the existing back catalog shortly after startup, once the heavier
+  // python services have finished warming up.
+  setTimeout(() => void audioCompression?.sweepAll(), 30_000)
 
   // ─── Diarization + speaker identification ──────────────────────────────────
   // Runs after a recording finishes: assigns diarization labels to each
@@ -887,6 +899,10 @@ function initServices(): void {
     // the renderer clears the "Analyzing recording…" banner regardless of
     // whether diarization/debrief succeeded or there were no segments.
     mainWindow?.webContents.send(IPC.recording.processed, { recordingId })
+
+    // Compress the WAV to AAC in the background now that every consumer of the
+    // raw audio (transcription, diarization, embedding) has finished with it.
+    audioCompression?.enqueue(recordingId)
   }
 
   queue.on('complete', async (recordingId: string) => {
@@ -1056,6 +1072,7 @@ app.on('before-quit', () => {
   globalShortcut.unregisterAll()
   void audio?.stop()
   tts?.stop()
+  audioCompression?.shutdown()
   pythonBridge?.killAll()
   queue?.destroy()
   closeDatabase()

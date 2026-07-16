@@ -442,6 +442,9 @@ export const IPC = {
     debriefReady: 'recording:debriefReady',
     // Event pushed from main → renderer when the full post-recording pipeline finishes
     processed: 'recording:processed',
+    // Event pushed from main → renderer when a recording row changed in the
+    // background (e.g. audio compression swapped audioPath)
+    updated: 'recording:updated',
     // Import an audio file and process it like a recording
     import: 'recording:import',
     // Re-transcribe and re-diarize an existing recording from its saved audio file
